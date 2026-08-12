@@ -1,0 +1,16 @@
+# frontend
+node_modules
+dist
+
+# python
+__pycache__
+*.pyc
+.pytest_cache
+
+# env / data
+.env
+data/*
+!data/.gitkeep
+
+# secrets
+apidetails.txt

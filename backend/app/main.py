@@ -1,44 +1,26 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Dict
-import uuid
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+from app.api.routes import router
+from app.config import get_settings
+from app.database import init_db
 
-# In-memory store for MVP
-repositories: Dict[str, Dict] = {}
+settings = get_settings()
 
+app = FastAPI(title="GitHub Repository AI Assistant", version="1.0.0")
 
-class RepoIn(BaseModel):
-    url: str
+origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/api/repositories", status_code=201)
-def create_repository(data: RepoIn):
-    repo_id = str(uuid.uuid4())
-    repositories[repo_id] = {
-        "id": repo_id,
-        "url": data.url,
-        "status": "created",
-    }
-    return repositories[repo_id]
+app.include_router(router)
 
 
-@app.get("/api/repositories")
-def list_repositories():
-    return list(repositories.values())
-
-
-@app.post("/api/repositories/{repo_id}/index")
-def index_repository(repo_id: str):
-    repo = repositories.get(repo_id)
-    if not repo:
-        raise HTTPException(status_code=404, detail="Repository not found")
-    # Enqueue work to worker (stub) — update status for now
-    repo["status"] = "queued"
-    return {"job_id": str(uuid.uuid4()), "status": repo["status"]}
+@app.on_event("startup")
+def on_startup() -> None:
+    init_db()
