@@ -1,0 +1,1 @@
+# Worker dependencies can be added here (e.g., celery, redis)
