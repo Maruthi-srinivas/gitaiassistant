@@ -52,12 +52,12 @@ export default function GraphView({ data }: Props) {
   }, [data]);
 
   if (!data) {
-    return <div className="panel-body">Graph will appear after indexing.</div>;
+    return <div className="graph-empty">Graph will appear after indexing.</div>;
   }
 
   return (
     <div className="graph-wrap">
-      <ReactFlow nodes={nodes} edges={edges} fitView>
+      <ReactFlow nodes={nodes} edges={edges} fitView style={{ width: "100%", height: "100%" }}>
         <Background />
         <MiniMap />
         <Controls />
