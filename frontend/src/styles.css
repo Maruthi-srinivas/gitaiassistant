@@ -164,6 +164,11 @@ input {
   line-height: 1.5;
 }
 
+.workspace-idle .idle-hint {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .chat-panel {
   flex: 1;
   min-height: 0;

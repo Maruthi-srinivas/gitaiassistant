@@ -78,9 +78,20 @@ def run_indexing_job(db: Session, job_id: uuid.UUID, incremental: bool = False) 
 
         _set_status(db, repo, job, JobStatus.CLONING, 0.1)
         if dest.exists() and (dest / ".git").exists() and incremental and old_commit:
-            old_c, new_c = pull_or_fetch(dest)
-            changed = changed_files(dest, old_c, new_c)
-            commit_hash = new_c
+            try:
+                old_c, new_c = pull_or_fetch(dest)
+                changed = changed_files(dest, old_c, new_c)
+                commit_hash = new_c
+            except Exception as fetch_exc:  # noqa: BLE001
+                logger.warning(
+                    "Incremental fetch failed for repo %s (%s); falling back to full clone",
+                    repo.id,
+                    fetch_exc,
+                )
+                commit_hash = clone_repository(parsed, dest)
+                changed = None
+                incremental = False
+                job.incremental = False
         else:
             commit_hash = clone_repository(parsed, dest)
             changed = None
@@ -175,4 +186,11 @@ def run_indexing_job(db: Session, job_id: uuid.UUID, incremental: bool = False) 
         job = db.get(IndexingJob, job_id)
         repo = db.get(Repository, job.repository_id) if job else None
         if job and repo:
-            _set_status(db, repo, job, JobStatus.FAILED, job.progress or 0.0, error=str(exc)[:2000])
+            msg = str(exc)
+            if "fetch" in msg.lower() or "incremental" in msg.lower():
+                msg = (
+                    f"{msg} Click Analyze to run a full re-index of this repository."
+                    if "Analyze" not in msg
+                    else msg
+                )
+            _set_status(db, repo, job, JobStatus.FAILED, job.progress or 0.0, error=msg[:2000])

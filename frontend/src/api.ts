@@ -39,14 +39,71 @@ export type ChatResponse = {
   sources: { file: string; start_line: number; end_line: number; snippet?: string }[];
 };
 
+function parseErrorBody(text: string): string {
+  if (!text) return "";
+  try {
+    const data = JSON.parse(text);
+    if (typeof data?.detail === "string") return data.detail;
+    if (Array.isArray(data?.detail)) {
+      return data.detail.map((d: { msg?: string }) => d.msg || JSON.stringify(d)).join("; ");
+    }
+    if (typeof data?.message === "string") return data.message;
+    if (typeof data?.error === "string") return data.error;
+  } catch {
+    // plain text body
+  }
+  return text;
+}
+
+/** Turn network / API failures into user-facing guidance. */
+export function formatUserError(err: unknown, context?: "incremental" | "analyze" | "chat" | "status"): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
+
+  if (
+    lower.includes("failed to fetch") ||
+    lower.includes("networkerror") ||
+    lower.includes("load failed") ||
+    lower.includes("network request failed")
+  ) {
+    if (context === "incremental") {
+      return "Could not reach the API for incremental update. Check that Docker/backend is running, then try Analyze for a full refresh.";
+    }
+    return "Could not reach the API (network error). Make sure the backend is running at http://localhost:8000, then try again.";
+  }
+
+  if (lower.includes("failed to fetch") || lower.includes("git fetch") || lower.includes("origin.fetch")) {
+    return "Git fetch failed while updating the repository. Click Analyze to run a full re-index instead.";
+  }
+
+  const cleaned = parseErrorBody(raw).trim();
+  if (!cleaned) {
+    return context === "incremental"
+      ? "Incremental update failed. Click Analyze to re-index the repository."
+      : "Request failed. Please try again.";
+  }
+
+  // Truncate huge HTML/error dumps
+  const short = cleaned.length > 280 ? `${cleaned.slice(0, 280)}…` : cleaned;
+  if (context === "incremental") {
+    return `${short} — If this keeps happening, click Analyze for a full re-index.`;
+  }
+  return short;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-    ...init,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+      ...init,
+    });
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : "Failed to fetch");
+  }
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    throw new Error(parseErrorBody(text) || res.statusText || `HTTP ${res.status}`);
   }
   return res.json();
 }

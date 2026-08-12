@@ -97,15 +97,29 @@ def clone_repository(parsed: ParsedRepoUrl, dest: Path) -> str:
 
 
 def pull_or_fetch(dest: Path) -> tuple[str, str]:
-    """Return (old_commit, new_commit)."""
-    repo = Repo(dest)
-    old = repo.head.commit.hexsha
-    origin = repo.remotes.origin
-    origin.fetch()
-    branch = repo.active_branch.name
-    repo.git.reset("--hard", f"origin/{branch}")
-    new = repo.head.commit.hexsha
-    return old, new
+    """Return (old_commit, new_commit). Raises RuntimeError with a clear message on failure."""
+    try:
+        repo = Repo(dest)
+        old = repo.head.commit.hexsha
+        origin = repo.remotes.origin
+        # Shallow clones need deepen/unshallow for reliable updates
+        try:
+            origin.fetch(prune=True)
+        except Exception:
+            # Retry with unshallow if this was a depth=1 clone
+            repo.git.fetch("--unshallow", "origin")
+        try:
+            branch = repo.active_branch.name
+        except TypeError:
+            # Detached HEAD — use remote HEAD default branch
+            branch = repo.git.symbolic_ref("refs/remotes/origin/HEAD").replace("refs/remotes/origin/", "")
+        repo.git.reset("--hard", f"origin/{branch}")
+        new = repo.head.commit.hexsha
+        return old, new
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Incremental git fetch failed ({exc}). Use Analyze for a full re-index."
+        ) from exc
 
 
 def changed_files(dest: Path, old_commit: str, new_commit: str) -> list[str]:

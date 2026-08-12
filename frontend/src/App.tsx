@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   api,
+  formatUserError,
   type ChatResponse,
   type FileDetail,
   type FileRow,
@@ -20,6 +21,10 @@ type ChatMessage = {
 
 type ModalKind = null | "tree" | "graph" | "source";
 
+function normalizeUrl(value: string): string {
+  return value.trim().replace(/\.git$/, "").replace(/\/$/, "");
+}
+
 export default function App() {
   const [url, setUrl] = useState("https://github.com/pallets/flask");
   const [repo, setRepo] = useState<Repo | null>(null);
@@ -37,6 +42,7 @@ export default function App() {
   const [openModal, setOpenModal] = useState<ModalKind>(null);
 
   const completed = status?.status === "COMPLETED";
+  const canIncremental = Boolean(repo && completed && normalizeUrl(repo.github_url) === normalizeUrl(url));
 
   useEffect(() => {
     if (!repo) return;
@@ -47,9 +53,15 @@ export default function App() {
         setStatus(s);
         if (s.status === "COMPLETED") {
           await loadArtifacts(repo.id);
+          setError(null);
+        } else if (s.status === "FAILED") {
+          setError(
+            s.error ||
+              "Indexing failed. Click Analyze to run a full re-index of this repository."
+          );
         }
       } catch (e) {
-        setError(String(e));
+        setError(formatUserError(e, "status"));
       }
     }, 2000);
     return () => clearInterval(t);
@@ -74,9 +86,32 @@ export default function App() {
     setBusy(true);
     setError(null);
     setOpenModal(null);
+
+    if (incremental) {
+      if (!repo) {
+        setError("Incremental needs a repository that was already analyzed. Click Analyze first.");
+        setBusy(false);
+        return;
+      }
+      if (!completed) {
+        setError(
+          "Incremental is only available after a successful Analyze. Wait for COMPLETED, or click Analyze."
+        );
+        setBusy(false);
+        return;
+      }
+      if (normalizeUrl(repo.github_url) !== normalizeUrl(url)) {
+        setError(
+          "URL changed since the last Analyze. Click Analyze to index this repository first; Incremental only updates the already-analyzed repo."
+        );
+        setBusy(false);
+        return;
+      }
+    }
+
     try {
       let current = repo;
-      if (!current || current.github_url !== url.replace(/\.git$/, "").replace(/\/$/, "")) {
+      if (!current || normalizeUrl(current.github_url) !== normalizeUrl(url)) {
         current = await api.createRepo(url);
         setRepo(current);
         setMessages([]);
@@ -89,8 +124,16 @@ export default function App() {
       await api.indexRepo(current.id, incremental);
       const s = await api.indexStatus(current.id);
       setStatus(s);
+      if (s.status === "FAILED") {
+        setError(
+          s.error ||
+            (incremental
+              ? "Incremental update failed. Click Analyze for a full re-index."
+              : "Analyze failed. Check the repository URL and try again.")
+        );
+      }
     } catch (e) {
-      setError(String(e));
+      setError(formatUserError(e, incremental ? "incremental" : "analyze"));
     } finally {
       setBusy(false);
     }
@@ -99,10 +142,14 @@ export default function App() {
   async function openPath(path: string, start?: number, end?: number) {
     const match = files.find((f) => f.path === path);
     if (!match || !repo) return;
-    const detail = await api.file(repo.id, match.id);
-    setSelectedFile(detail);
-    setHighlight(start && end ? { start, end } : null);
-    setOpenModal("source");
+    try {
+      const detail = await api.file(repo.id, match.id);
+      setSelectedFile(detail);
+      setHighlight(start && end ? { start, end } : null);
+      setOpenModal("source");
+    } catch (e) {
+      setError(formatUserError(e));
+    }
   }
 
   async function sendChat() {
@@ -115,7 +162,10 @@ export default function App() {
       setConversationId(res.conversation_id);
       setMessages((m) => [...m, { role: "assistant", content: res.answer, sources: res.sources }]);
     } catch (e) {
-      setMessages((m) => [...m, { role: "assistant", content: `Error: ${e}` }]);
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: formatUserError(e, "chat") },
+      ]);
     }
   }
 
@@ -148,7 +198,7 @@ export default function App() {
         <button disabled={busy} onClick={() => analyze(false)}>
           Analyze
         </button>
-        <button className="secondary" disabled={busy || !repo} onClick={() => analyze(true)}>
+        <button className="secondary" disabled={busy || !canIncremental} onClick={() => analyze(true)} title={!canIncremental ? "Analyze this repo successfully first, then Incremental can update it" : "Update only changed files since last index"}>
           Incremental
         </button>
       </div>
@@ -183,7 +233,12 @@ export default function App() {
             ) : status?.status === "FAILED" ? (
               <>
                 <h2>Indexing failed</h2>
-                <p>{status.error || "Try analyzing again."}</p>
+                <p>
+                  {status.error ||
+                    error ||
+                    "Something went wrong during indexing."}
+                </p>
+                <p className="idle-hint">Click Analyze to run a full re-index of this repository.</p>
               </>
             ) : (
               <>
