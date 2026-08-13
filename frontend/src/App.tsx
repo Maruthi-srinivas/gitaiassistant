@@ -169,18 +169,25 @@ export default function App() {
     }
   }
 
+  async function openFileById(fileId: string, _name?: string) {
+    const match = files.find((f) => f.id === fileId);
+    if (!match) {
+      setError("No source file linked to this graph node.");
+      return;
+    }
+    await openPath(match.path);
+  }
+
   const lines = useMemo(() => (selectedFile?.content || "").split("\n"), [selectedFile]);
 
   const modalTitle =
     openModal === "tree"
       ? "Knowledge Tree"
-      : openModal === "graph"
-        ? "Dependency Graph"
-        : openModal === "source"
-          ? selectedFile
-            ? `Source — ${selectedFile.path}`
-            : "Source Viewer"
-          : "";
+      : openModal === "source"
+        ? selectedFile
+          ? `Source — ${selectedFile.path}`
+          : "Source Viewer"
+        : "";
 
   return (
     <div className="app">
@@ -293,7 +300,16 @@ export default function App() {
         )}
       </div>
 
-      {openModal && (
+      {openModal === "graph" && (
+        <GraphView
+          data={graph}
+          fullscreen
+          onClose={() => setOpenModal(null)}
+          onOpenFile={openFileById}
+        />
+      )}
+
+      {openModal && openModal !== "graph" && (
         <div className="modal-backdrop" onClick={() => setOpenModal(null)} role="presentation">
           <div
             className={`modal ${openModal === "source" ? "modal-source" : "modal-wide"}`}
@@ -312,7 +328,6 @@ export default function App() {
               {openModal === "tree" && (
                 <KnowledgeTree nodes={tree} onSelectFile={(p) => openPath(p)} />
               )}
-              {openModal === "graph" && <GraphView data={graph} />}
               {openModal === "source" && (
                 <div className="source-view">
                   {!selectedFile ? (
