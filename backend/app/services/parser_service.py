@@ -6,7 +6,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models import Dependency, FileRecord, Symbol
-from app.parsers import parse_javascript, parse_python, parse_typescript
+from app.parsers import parse_java, parse_javascript, parse_python, parse_typescript
 from app.parsers.base import ParseResult
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,8 @@ def parse_file_content(language: str, path: str, content: str) -> ParseResult:
             return parse_javascript(content)
         if language == "typescript":
             return parse_typescript(content, tsx=path.endswith(".tsx"))
+        if language == "java":
+            return parse_java(content)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Parse failed for %s: %s", path, exc)
     return ParseResult()

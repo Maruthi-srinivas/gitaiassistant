@@ -73,6 +73,7 @@ LANG_BY_EXT = {
     ".cjs": "javascript",
     ".ts": "typescript",
     ".tsx": "typescript",
+    ".java": "java",
 }
 
 

@@ -32,7 +32,7 @@ App containers connect via Compose DNS (`postgres`, `redis`), not localhost.
 ## Flow
 
 1. Paste a public GitHub URL in the UI and click **Analyze**
-2. Worker clones, parses (Python/JS/TS), builds graph + knowledge tree, chunks, embeds
+2. Worker clones, parses (Python/JS/TS/Java), builds graph + knowledge tree, chunks, embeds
 3. Explore tree/graph, open sources, chat with citations
 
 ## Environment
