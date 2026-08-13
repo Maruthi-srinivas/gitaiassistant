@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   api,
   formatUserError,
-  type ChatResponse,
   type FileDetail,
   type FileRow,
   type GraphData,
@@ -10,16 +9,11 @@ import {
   type KnowledgeNode,
   type Repo,
 } from "./api";
+import ChatPanel, { type ChatMessage } from "./ChatPanel";
 import GraphView from "./GraphView";
-import KnowledgeTree from "./KnowledgeTree";
-
-type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-  sources?: ChatResponse["sources"];
-};
-
-type ModalKind = null | "tree" | "graph" | "source";
+import LeftRail from "./LeftRail";
+import SourceDrawer from "./SourceDrawer";
+import WorkspaceShell from "./WorkspaceShell";
 
 function normalizeUrl(value: string): string {
   return value.trim().replace(/\.git$/, "").replace(/\/$/, "");
@@ -39,10 +33,16 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("Where is the application factory defined?");
   const [conversationId, setConversationId] = useState<string | undefined>();
-  const [openModal, setOpenModal] = useState<ModalKind>(null);
+  const [graphOpen, setGraphOpen] = useState(false);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const [leftCollapsed, setLeftCollapsed] = useState(
+    () => typeof window !== "undefined" && window.innerWidth <= 960
+  );
 
   const completed = status?.status === "COMPLETED";
-  const canIncremental = Boolean(repo && completed && normalizeUrl(repo.github_url) === normalizeUrl(url));
+  const canIncremental = Boolean(
+    repo && completed && normalizeUrl(repo.github_url) === normalizeUrl(url)
+  );
 
   useEffect(() => {
     if (!repo) return;
@@ -69,11 +69,18 @@ export default function App() {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpenModal(null);
+      if (e.key !== "Escape") return;
+      if (graphOpen) {
+        setGraphOpen(false);
+        return;
+      }
+      if (sourceOpen) {
+        setSourceOpen(false);
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [graphOpen, sourceOpen]);
 
   async function loadArtifacts(repoId: string) {
     const [t, g, f] = await Promise.all([api.tree(repoId), api.graph(repoId), api.files(repoId)]);
@@ -85,7 +92,7 @@ export default function App() {
   async function analyze(incremental = false) {
     setBusy(true);
     setError(null);
-    setOpenModal(null);
+    setGraphOpen(false);
 
     if (incremental) {
       if (!repo) {
@@ -120,6 +127,7 @@ export default function App() {
         setGraph(null);
         setFiles([]);
         setSelectedFile(null);
+        setSourceOpen(false);
       }
       await api.indexRepo(current.id, incremental);
       const s = await api.indexStatus(current.id);
@@ -146,26 +154,10 @@ export default function App() {
       const detail = await api.file(repo.id, match.id);
       setSelectedFile(detail);
       setHighlight(start && end ? { start, end } : null);
-      setOpenModal("source");
+      setGraphOpen(false);
+      setSourceOpen(true);
     } catch (e) {
       setError(formatUserError(e));
-    }
-  }
-
-  async function sendChat() {
-    if (!repo || !chatInput.trim() || !completed) return;
-    const q = chatInput.trim();
-    setChatInput("");
-    setMessages((m) => [...m, { role: "user", content: q }]);
-    try {
-      const res = await api.chat(repo.id, q, conversationId);
-      setConversationId(res.conversation_id);
-      setMessages((m) => [...m, { role: "assistant", content: res.answer, sources: res.sources }]);
-    } catch (e) {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: formatUserError(e, "chat") },
-      ]);
     }
   }
 
@@ -178,180 +170,92 @@ export default function App() {
     await openPath(match.path);
   }
 
-  const lines = useMemo(() => (selectedFile?.content || "").split("\n"), [selectedFile]);
+  async function sendChat() {
+    if (!repo || !chatInput.trim() || !completed) return;
+    const q = chatInput.trim();
+    setChatInput("");
+    setMessages((m) => [...m, { role: "user", content: q }]);
+    try {
+      const res = await api.chat(repo.id, q, conversationId);
+      setConversationId(res.conversation_id);
+      setMessages((m) => [...m, { role: "assistant", content: res.answer, sources: res.sources }]);
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", content: formatUserError(e, "chat") }]);
+    }
+  }
 
-  const modalTitle =
-    openModal === "tree"
-      ? "Knowledge Tree"
-      : openModal === "source"
-        ? selectedFile
-          ? `Source — ${selectedFile.path}`
-          : "Source Viewer"
-        : "";
+  const indexing =
+    Boolean(status) && status!.status !== "FAILED" && status!.status !== "COMPLETED";
+  const failed = status?.status === "FAILED";
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1>GitHub Repository AI Assistant</h1>
-        <p>Paste a public GitHub URL, analyze the repo, then chat with citations.</p>
-      </header>
+    <>
+      <WorkspaceShell
+        leftCollapsed={leftCollapsed}
+        sourceOpen={sourceOpen}
+        brand={
+          <>
+            <h1>GitHub Repository AI Assistant</h1>
+            <span className="brand-status">
+              {error
+                ? error
+                : status
+                  ? `${status.status}`
+                  : "Paste a repo URL in the left rail to begin"}
+            </span>
+          </>
+        }
+        left={
+          <LeftRail
+            url={url}
+            onUrlChange={setUrl}
+            busy={busy}
+            canIncremental={canIncremental}
+            onAnalyze={() => analyze(false)}
+            onIncremental={() => analyze(true)}
+            status={status}
+            repo={repo}
+            error={error}
+            completed={completed}
+            tree={tree}
+            collapsed={leftCollapsed}
+            onToggleCollapse={() => setLeftCollapsed((c) => !c)}
+            onOpenGraph={() => setGraphOpen(true)}
+            onSelectFile={(p) => openPath(p)}
+          />
+        }
+        center={
+          <ChatPanel
+            completed={completed}
+            indexing={indexing}
+            failed={failed}
+            failMessage={status?.error || error}
+            repo={repo}
+            messages={messages}
+            chatInput={chatInput}
+            onChatInputChange={setChatInput}
+            onSend={sendChat}
+            onOpenCitation={(file, start, end) => openPath(file, start, end)}
+          />
+        }
+        right={
+          <SourceDrawer
+            open={sourceOpen}
+            file={selectedFile}
+            highlight={highlight}
+            onClose={() => setSourceOpen(false)}
+          />
+        }
+      />
 
-      <div className="analyze-bar">
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://github.com/owner/repo"
-        />
-        <button disabled={busy} onClick={() => analyze(false)}>
-          Analyze
-        </button>
-        <button className="secondary" disabled={busy || !canIncremental} onClick={() => analyze(true)} title={!canIncremental ? "Analyze this repo successfully first, then Incremental can update it" : "Update only changed files since last index"}>
-          Incremental
-        </button>
-      </div>
-
-      <div className={`status-line ${error ? "error" : ""}`}>
-        {error
-          ? error
-          : status
-            ? `Repo ${repo?.owner}/${repo?.name} — ${status.status} (${Math.round((status.progress || 0) * 100)}%)`
-            : "Ready"}
-      </div>
-
-      {completed && (
-        <div className="explore-actions">
-          <button type="button" onClick={() => setOpenModal("tree")}>
-            Knowledge Tree
-          </button>
-          <button type="button" onClick={() => setOpenModal("graph")}>
-            Dependency Graph
-          </button>
-        </div>
-      )}
-
-      <div className="workspace">
-        {!completed ? (
-          <div className="workspace-idle">
-            {status && status.status !== "FAILED" ? (
-              <>
-                <h2>Indexing in progress</h2>
-                <p>Chat and explore tools unlock when analysis finishes.</p>
-              </>
-            ) : status?.status === "FAILED" ? (
-              <>
-                <h2>Indexing failed</h2>
-                <p>
-                  {status.error ||
-                    error ||
-                    "Something went wrong during indexing."}
-                </p>
-                <p className="idle-hint">Click Analyze to run a full re-index of this repository.</p>
-              </>
-            ) : (
-              <>
-                <h2>Start by analyzing a repository</h2>
-                <p>Paste a public GitHub URL above and click Analyze.</p>
-              </>
-            )}
-          </div>
-        ) : (
-          <section className="chat-panel">
-            <div className="chat-panel-header">
-              <h2>Chat</h2>
-              <span className="chat-repo">
-                {repo?.owner}/{repo?.name}
-              </span>
-            </div>
-            <div className="chat">
-              <div className="messages">
-                {messages.length === 0 && (
-                  <div className="chat-empty">Ask a question about this repository. Citations open the source viewer.</div>
-                )}
-                {messages.map((m, i) => (
-                  <div key={i} className={`bubble ${m.role}`}>
-                    {m.content}
-                    {m.sources && m.sources.length > 0 && (
-                      <div className="sources">
-                        {m.sources.map((s, j) => (
-                          <button
-                            key={j}
-                            onClick={() => openPath(s.file, s.start_line, s.end_line)}
-                            title={s.snippet || ""}
-                          >
-                            {s.file}:{s.start_line}-{s.end_line}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-              <div className="chat-input">
-                <input
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && sendChat()}
-                  placeholder="Ask about this repository..."
-                />
-                <button onClick={sendChat}>Send</button>
-              </div>
-            </div>
-          </section>
-        )}
-      </div>
-
-      {openModal === "graph" && (
+      {graphOpen && (
         <GraphView
           data={graph}
           fullscreen
-          onClose={() => setOpenModal(null)}
+          onClose={() => setGraphOpen(false)}
           onOpenFile={openFileById}
         />
       )}
-
-      {openModal && openModal !== "graph" && (
-        <div className="modal-backdrop" onClick={() => setOpenModal(null)} role="presentation">
-          <div
-            className={`modal ${openModal === "source" ? "modal-source" : "modal-wide"}`}
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-label={modalTitle}
-          >
-            <div className="modal-header">
-              <h2>{modalTitle}</h2>
-              <button type="button" className="modal-close" onClick={() => setOpenModal(null)}>
-                Close
-              </button>
-            </div>
-            <div className="modal-body">
-              {openModal === "tree" && (
-                <KnowledgeTree nodes={tree} onSelectFile={(p) => openPath(p)} />
-              )}
-              {openModal === "source" && (
-                <div className="source-view">
-                  {!selectedFile ? (
-                    <div>Select a file from the tree or a citation.</div>
-                  ) : (
-                    <pre>
-                      {lines.map((line, idx) => {
-                        const n = idx + 1;
-                        const active =
-                          highlight && n >= highlight.start && n <= highlight.end ? " highlight" : "";
-                        return (
-                          <div key={n} className={`line${active}`}>
-                            {String(n).padStart(4, " ")} | {line}
-                          </div>
-                        );
-                      })}
-                    </pre>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
