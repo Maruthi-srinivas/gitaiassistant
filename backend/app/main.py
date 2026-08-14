@@ -7,7 +7,7 @@ from app.database import init_db
 
 settings = get_settings()
 
-app = FastAPI(title="GitHub Repository AI Assistant", version="1.0.0")
+app = FastAPI(title="GitHub Repository AI Assistant", version="2.0.0")
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from collections import defaultdict
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import FileRecord, KnowledgeNode, Repository, Symbol
+from app.rag.embeddings import chat_completion
+
+logger = logging.getLogger(__name__)
 
 
 def rebuild_knowledge_tree(db: Session, repository_id: uuid.UUID) -> None:
@@ -75,6 +81,106 @@ def rebuild_knowledge_tree(db: Session, repository_id: uuid.UUID) -> None:
                 )
             )
     db.flush()
+
+
+def enrich_knowledge_descriptions(
+    db: Session,
+    repository_id: uuid.UUID,
+    file_paths: list[str] | None = None,
+    max_nodes: int = 40,
+) -> int:
+    """LLM-enrich directory and class nodes with short responsibility blurbs."""
+    settings = get_settings()
+    if not settings.llm_api_key:
+        logger.info("Skipping knowledge enrichment (no LLM_API_KEY)")
+        return 0
+
+    q = db.query(KnowledgeNode).filter(
+        KnowledgeNode.repository_id == repository_id,
+        KnowledgeNode.type.in_(["directory", "class"]),
+    )
+    if file_paths:
+        prefixes: set[str] = set()
+        for p in file_paths:
+            parts = p.split("/")
+            for i in range(len(parts)):
+                prefixes.add("/".join(parts[: i + 1]))
+            prefixes.add(p)
+        nodes = [
+            n
+            for n in q.all()
+            if n.path
+            and (
+                n.path in prefixes
+                or any(
+                    fp.startswith(n.path.rstrip("/") + "/") or fp == n.path for fp in file_paths
+                )
+            )
+        ][:max_nodes]
+        if not nodes:
+            nodes = q.limit(max_nodes).all()
+    else:
+        nodes = q.limit(max_nodes).all()
+
+    if not nodes:
+        return 0
+
+    # Build child name context
+    all_nodes = db.query(KnowledgeNode).filter(KnowledgeNode.repository_id == repository_id).all()
+    children_by_parent: dict[uuid.UUID | None, list[str]] = defaultdict(list)
+    for n in all_nodes:
+        if n.parent_id:
+            children_by_parent[n.parent_id].append(n.name)
+
+    batch: list[dict] = []
+    for n in nodes:
+        kids = children_by_parent.get(n.id, [])[:8]
+        batch.append(
+            {
+                "id": str(n.id),
+                "name": n.name,
+                "type": n.type,
+                "path": n.path,
+                "children": kids,
+            }
+        )
+
+    prompt = [
+        {
+            "role": "system",
+            "content": (
+                "You describe software repository structure. "
+                "For each node return a JSON array of objects with keys id and description "
+                "(one concise sentence about responsibility). No markdown."
+            ),
+        },
+        {
+            "role": "user",
+            "content": "Nodes:\n" + json.dumps(batch),
+        },
+    ]
+    try:
+        raw = chat_completion(prompt, temperature=0.2)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            return 0
+        by_id = {str(n.id): n for n in nodes}
+        updated = 0
+        for item in data:
+            nid = str(item.get("id", ""))
+            desc = (item.get("description") or "").strip()
+            if nid in by_id and desc:
+                by_id[nid].description = desc[:500]
+                updated += 1
+        db.flush()
+        return updated
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("enrich_knowledge_descriptions failed: %s", exc)
+        return 0
 
 
 def get_knowledge_tree(db: Session, repository_id: uuid.UUID) -> list[dict]:

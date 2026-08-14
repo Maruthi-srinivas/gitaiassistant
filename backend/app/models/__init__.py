@@ -90,12 +90,77 @@ class IndexingJob(Base):
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     error: Mapped[str | None] = mapped_column(Text)
     incremental: Mapped[bool] = mapped_column(default=False)
+    branch: Mapped[str | None] = mapped_column(String(255))
+    timings: Mapped[dict | None] = mapped_column(JSONB)
+    metrics: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
     repository: Mapped[Repository] = relationship(back_populates="jobs")
+
+
+class RepositoryBranch(Base):
+    __tablename__ = "repository_branches"
+    __table_args__ = (UniqueConstraint("repository_id", "name", name="uq_repo_branch_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    commit_hash: Mapped[str | None] = mapped_column(String(64))
+    is_indexed: Mapped[bool] = mapped_column(default=False)
+
+
+class Commit(Base):
+    __tablename__ = "commits"
+    __table_args__ = (UniqueConstraint("repository_id", "sha", name="uq_repo_commit_sha"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
+    sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    author: Mapped[str | None] = mapped_column(String(512))
+    authored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    message: Mapped[str | None] = mapped_column(Text)
+
+    files: Mapped[list["CommitFile"]] = relationship(
+        back_populates="commit", cascade="all, delete-orphan"
+    )
+
+
+class CommitFile(Base):
+    __tablename__ = "commit_files"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    commit_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("commits.id", ondelete="CASCADE"))
+    path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    change_type: Mapped[str] = mapped_column(String(8), nullable=False)  # A / M / D
+
+    commit: Mapped[Commit] = relationship(back_populates="files")
+
+
+class FileChurn(Base):
+    __tablename__ = "file_churn"
+    __table_args__ = (UniqueConstraint("repository_id", "path", name="uq_file_churn_path"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
+    path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    change_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_commit_sha: Mapped[str | None] = mapped_column(String(64))
+
+
+class FileCoChange(Base):
+    __tablename__ = "file_co_changes"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "path_a", "path_b", name="uq_co_change_pair"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
+    path_a: Mapped[str] = mapped_column(String(1024), nullable=False)
+    path_b: Mapped[str] = mapped_column(String(1024), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class FileRecord(Base):
