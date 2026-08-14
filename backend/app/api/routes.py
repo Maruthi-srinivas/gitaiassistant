@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import Dependency, FileRecord, Symbol
+from app.models import Dependency, FileRecord, RepositoryBranch, Symbol
 from app.schemas import (
+    BranchOut,
     ChatRequest,
     ChatResponse,
+    ChurnOut,
+    CommitOut,
     DependencyOut,
     FileDetailOut,
     FileOut,
@@ -28,6 +32,13 @@ from app.schemas import (
 )
 from app.agents.workflow import chat as agent_chat
 from app.services.cache import cache_get, cache_set, chat_cache_key
+from app.services.file_discovery import repo_local_path
+from app.services.git_history_service import (
+    commits_for_path,
+    compare_commits,
+    file_churn_top,
+    module_churn,
+)
 from app.services.graph_service import get_graph
 from app.services.knowledge_service import get_knowledge_tree
 from app.services.repository_service import (
@@ -71,17 +82,23 @@ def get_repo(repo_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/repositories/{repo_id}/index", response_model=IndexJobOut)
-def index_repo(repo_id: uuid.UUID, body: IndexRequest | None = None, db: Session = Depends(get_db)):
+def index_repo(
+    repo_id: uuid.UUID, body: IndexRequest | None = None, db: Session = Depends(get_db)
+):
     settings = get_settings()
     check_rate_limit(f"index:{repo_id}", settings.index_rate_limit_per_minute)
     incremental = body.incremental if body else False
-    job = enqueue_index(db, repo_id, incremental=incremental)
+    branch = body.branch if body else None
+    job = enqueue_index(db, repo_id, incremental=incremental, branch=branch)
     return IndexJobOut(
         job_id=job.id,
         status=job.status.value,
         progress=job.progress,
         error=job.error,
         incremental=job.incremental,
+        branch=job.branch,
+        timings=job.timings,
+        metrics=job.metrics,
     )
 
 
@@ -94,6 +111,9 @@ def index_status(repo_id: uuid.UUID, db: Session = Depends(get_db)):
         status=repo.status.value,
         progress=job.progress if job else 0.0,
         error=repo.error,
+        branch=job.branch if job else repo.default_branch,
+        timings=job.timings if job else None,
+        metrics=job.metrics if job else None,
         job=(
             IndexJobOut(
                 job_id=job.id,
@@ -101,11 +121,76 @@ def index_status(repo_id: uuid.UUID, db: Session = Depends(get_db)):
                 progress=job.progress,
                 error=job.error,
                 incremental=job.incremental,
+                branch=job.branch,
+                timings=job.timings,
+                metrics=job.metrics,
             )
             if job
             else None
         ),
     )
+
+
+@router.get("/repositories/{repo_id}/branches", response_model=list[BranchOut])
+def list_branches(repo_id: uuid.UUID, db: Session = Depends(get_db)):
+    get_repository(db, repo_id)
+    rows = (
+        db.query(RepositoryBranch)
+        .filter(RepositoryBranch.repository_id == repo_id)
+        .order_by(RepositoryBranch.name)
+        .all()
+    )
+    return [
+        BranchOut(name=r.name, commit_hash=r.commit_hash, is_indexed=r.is_indexed) for r in rows
+    ]
+
+
+@router.get("/repositories/{repo_id}/history", response_model=list[CommitOut])
+def history_for_path(
+    repo_id: uuid.UUID,
+    path: str = Query("", description="File path or symbol hint"),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    get_repository(db, repo_id)
+    return [CommitOut(**c) for c in commits_for_path(db, repo_id, path, limit=limit)]
+
+
+@router.get("/repositories/{repo_id}/history/churn", response_model=list[ChurnOut])
+def history_churn(
+    repo_id: uuid.UUID,
+    limit: int = Query(20, ge=1, le=100),
+    by: str = Query("module"),
+    db: Session = Depends(get_db),
+):
+    get_repository(db, repo_id)
+    if by not in {"module", "file"}:
+        raise HTTPException(status_code=400, detail="by must be 'module' or 'file'")
+    if by == "file":
+        return [
+            ChurnOut(
+                path=r["path"],
+                change_count=r["change_count"],
+                last_commit_sha=r.get("last_commit_sha"),
+            )
+            for r in file_churn_top(db, repo_id, limit=limit)
+        ]
+    return [
+        ChurnOut(module=r["module"], change_count=r["change_count"])
+        for r in module_churn(db, repo_id, limit=limit)
+    ]
+
+
+@router.get("/repositories/{repo_id}/history/compare")
+def history_compare(
+    repo_id: uuid.UUID,
+    from_sha: str = Query(..., alias="from"),
+    to_sha: str = Query(..., alias="to"),
+    db: Session = Depends(get_db),
+):
+    repo = get_repository(db, repo_id)
+    dest = Path(repo.local_path) if repo.local_path else repo_local_path(str(repo.id))
+    return compare_commits(db, repo_id, dest if dest.exists() else None, from_sha, to_sha)
 
 
 @router.get("/repositories/{repo_id}/tree")

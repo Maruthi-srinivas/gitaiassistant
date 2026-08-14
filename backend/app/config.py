@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     chat_rate_limit_per_minute: int = 30
     index_rate_limit_per_minute: int = 10
+    git_clone_depth: int = 200
+    git_history_max_commits: int = 200
 
 
 @lru_cache

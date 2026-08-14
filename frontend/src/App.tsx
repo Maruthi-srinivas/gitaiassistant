@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   api,
   formatUserError,
+  type Branch,
   type FileDetail,
   type FileRow,
   type GraphData,
@@ -47,6 +48,8 @@ export default function App() {
   const [activityLog, setActivityLog] = useState<
     { label: string; time: string; ok: boolean }[]
   >([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState("");
 
   const completed = status?.status === "COMPLETED";
   const canIncremental = Boolean(
@@ -77,6 +80,21 @@ export default function App() {
     setActivityLog((prev) => [{ label, time, ok }, ...prev].slice(0, 8));
   }
 
+  async function refreshBranches(repoId: string) {
+    try {
+      const list = await api.branches(repoId);
+      setBranches(list);
+      const indexed = list.find((b) => b.is_indexed);
+      if (indexed) {
+        setSelectedBranch(indexed.name);
+      } else if (list.length) {
+        setSelectedBranch((prev) => prev || list[0].name);
+      }
+    } catch {
+      // branches appear after first index
+    }
+  }
+
   useEffect(() => {
     if (!repo) return;
     if (!status || status.status === "COMPLETED" || status.status === "FAILED") return;
@@ -86,6 +104,7 @@ export default function App() {
         setStatus(s);
         if (s.status === "COMPLETED") {
           await loadArtifacts(repo.id);
+          await refreshBranches(repo.id);
           setError(null);
           logActivity("Repository indexed successfully");
         } else if (s.status === "FAILED") {
@@ -124,10 +143,11 @@ export default function App() {
     setFiles(f);
   }
 
-  async function analyze(incremental = false) {
+  async function analyze(incremental = false, branchOverride?: string) {
     setBusy(true);
     setError(null);
     setGraphOpen(false);
+    const branch = branchOverride ?? (selectedBranch || undefined);
 
     if (incremental) {
       if (!repo) {
@@ -163,9 +183,13 @@ export default function App() {
         setFiles([]);
         setSelectedFile(null);
         setSourceOpen(false);
+        setBranches([]);
+        if (current.default_branch) {
+          setSelectedBranch(current.default_branch);
+        }
         logActivity(`Connected ${current.owner}/${current.name}`);
       }
-      await api.indexRepo(current.id, incremental);
+      await api.indexRepo(current.id, incremental, branch);
       const s = await api.indexStatus(current.id);
       setStatus(s);
       if (s.status === "FAILED") {
@@ -177,13 +201,25 @@ export default function App() {
         );
         logActivity("Analyze failed", false);
       } else if (s.status !== "COMPLETED") {
-        logActivity(incremental ? "Incremental update started" : "Analyze started");
+        logActivity(
+          incremental
+            ? "Incremental update started"
+            : `Analyze started${branch ? ` (${branch})` : ""}`
+        );
       }
     } catch (e) {
       setError(formatUserError(e, incremental ? "incremental" : "analyze"));
       logActivity("Analyze error", false);
     } finally {
       setBusy(false);
+    }
+  }
+
+  function onBranchChange(branch: string) {
+    setSelectedBranch(branch);
+    if (repo && completed && branch !== (status?.branch || repo.default_branch)) {
+      logActivity(`Switching to branch ${branch}`);
+      void analyze(false, branch);
     }
   }
 
@@ -287,6 +323,9 @@ export default function App() {
             onNavChange={setActiveNav}
             recentChats={recentChats}
             onSelectChat={() => setActiveNav("chats")}
+            branches={branches}
+            selectedBranch={selectedBranch || repo?.default_branch || ""}
+            onBranchChange={onBranchChange}
           />
         }
         center={

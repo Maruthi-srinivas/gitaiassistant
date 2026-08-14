@@ -1,4 +1,4 @@
-import type { IndexStatus, KnowledgeNode, Repo } from "./api";
+import type { Branch, IndexStatus, KnowledgeNode, Repo } from "./api";
 import KnowledgeTree from "./KnowledgeTree";
 
 type NavItem = "home" | "repositories" | "chats" | "knowledge" | "settings";
@@ -23,6 +23,9 @@ type Props = {
   onNavChange: (nav: NavItem) => void;
   recentChats: { id: string; title: string; active?: boolean }[];
   onSelectChat: (id: string) => void;
+  branches: Branch[];
+  selectedBranch: string;
+  onBranchChange: (branch: string) => void;
 };
 
 const NAV_ITEMS: { id: NavItem; label: string; icon: string }[] = [
@@ -53,6 +56,9 @@ export default function LeftRail({
   onNavChange,
   recentChats,
   onSelectChat,
+  branches,
+  selectedBranch,
+  onBranchChange,
 }: Props) {
   if (collapsed) {
     return (
@@ -83,10 +89,11 @@ export default function LeftRail({
     );
   }
 
+  const branchSuffix = status?.branch ? ` @ ${status.branch}` : "";
   const statusText = error
     ? error
     : status
-      ? `${repo?.owner}/${repo?.name} — ${status.status} (${Math.round((status.progress || 0) * 100)}%)`
+      ? `${repo?.owner}/${repo?.name} — ${status.status} (${Math.round((status.progress || 0) * 100)}%)${branchSuffix}`
       : "Ready";
 
   const showRepoPanel = activeNav === "home" || activeNav === "repositories";
@@ -149,6 +156,26 @@ export default function LeftRail({
               onChange={(e) => onUrlChange(e.target.value)}
               placeholder="https://github.com/owner/repo"
             />
+            {(branches.length > 0 || selectedBranch) && (
+              <label className="rail-branch">
+                <span>Branch</span>
+                <select
+                  value={selectedBranch}
+                  disabled={busy}
+                  onChange={(e) => onBranchChange(e.target.value)}
+                >
+                  {branches.length === 0 && selectedBranch ? (
+                    <option value={selectedBranch}>{selectedBranch}</option>
+                  ) : null}
+                  {branches.map((b) => (
+                    <option key={b.name} value={b.name}>
+                      {b.name}
+                      {b.is_indexed ? " (indexed)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <div className="rail-analyze-actions">
               <button type="button" disabled={busy} onClick={onAnalyze}>
                 Analyze

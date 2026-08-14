@@ -28,10 +28,13 @@ def main() -> None:
             data = json.loads(payload)
             job_id = uuid.UUID(data["job_id"])
             incremental = bool(data.get("incremental", False))
-            logger.info("Processing job %s incremental=%s", job_id, incremental)
+            branch = data.get("branch")
+            logger.info(
+                "Processing job %s incremental=%s branch=%s", job_id, incremental, branch
+            )
             db = SessionLocal()
             try:
-                run_indexing_job(db, job_id, incremental=incremental)
+                run_indexing_job(db, job_id, incremental=incremental, branch=branch)
             finally:
                 db.close()
         except Exception:  # noqa: BLE001

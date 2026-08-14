@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CodeChunk, FileRecord, Symbol
 from app.rag.embeddings import embed_texts
+from app.services.markdown_chunking import chunk_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,25 @@ def chunk_repository(
     files = q.all()
     created = 0
     for f in files:
-        symbols = db.query(Symbol).filter(Symbol.file_id == f.id).all()
         lines = (f.content or "").splitlines()
+        if f.language == "markdown":
+            for start, end, body in chunk_markdown(f.content or ""):
+                db.add(
+                    CodeChunk(
+                        file_id=f.id,
+                        repository_id=repository_id,
+                        content=body,
+                        start_line=start,
+                        end_line=end,
+                        language="markdown",
+                        commit_hash=commit_hash,
+                        tsv=body[:2000],
+                    )
+                )
+                created += 1
+            continue
+
+        symbols = db.query(Symbol).filter(Symbol.file_id == f.id).all()
         if symbols:
             for sym in symbols:
                 if sym.type not in {"class", "function", "method"}:
@@ -43,8 +61,14 @@ def chunk_repository(
                 body = "\n".join(lines[max(0, sym.start_line - 1) : sym.end_line])
                 if not body.strip():
                     continue
-                class_name = sym.name.split(".")[0] if "." in sym.name else (sym.name if sym.type == "class" else None)
-                method_name = sym.name.split(".")[-1] if sym.type in {"function", "method"} else None
+                class_name = (
+                    sym.name.split(".")[0]
+                    if "." in sym.name
+                    else (sym.name if sym.type == "class" else None)
+                )
+                method_name = (
+                    sym.name.split(".")[-1] if sym.type in {"function", "method"} else None
+                )
                 db.add(
                     CodeChunk(
                         file_id=f.id,
@@ -62,7 +86,6 @@ def chunk_repository(
                 )
                 created += 1
         else:
-            # Fallback sliding window
             window = 80
             step = 60
             for start in range(0, max(1, len(lines)), step):
@@ -89,8 +112,12 @@ def chunk_repository(
     return created
 
 
-def embed_chunks(db: Session, repository_id: uuid.UUID, file_ids: list[uuid.UUID] | None = None) -> int:
-    q = db.query(CodeChunk).filter(CodeChunk.repository_id == repository_id, CodeChunk.embedding.is_(None))
+def embed_chunks(
+    db: Session, repository_id: uuid.UUID, file_ids: list[uuid.UUID] | None = None
+) -> int:
+    q = db.query(CodeChunk).filter(
+        CodeChunk.repository_id == repository_id, CodeChunk.embedding.is_(None)
+    )
     if file_ids is not None:
         if not file_ids:
             return 0

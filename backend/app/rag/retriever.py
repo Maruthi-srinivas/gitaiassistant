@@ -126,6 +126,70 @@ def symbol_search(db: Session, repository_id: uuid.UUID, query: str, limit: int 
     return results
 
 
+def search_documentation(
+    db: Session, repository_id: uuid.UUID, query: str, limit: int = 8
+) -> list[dict]:
+    """Vector + keyword retrieval restricted to markdown documentation chunks."""
+    try:
+        embedding = embed_texts([query])[0]
+    except Exception:
+        embedding = None
+
+    results: list[dict] = []
+    if embedding is not None:
+        sql = text(
+            """
+            SELECT c.id, c.content, c.start_line, c.end_line, c.class_name, c.method_name,
+                   c.language, f.path,
+                   (c.embedding <=> CAST(:embedding AS vector)) AS distance
+            FROM code_chunks c
+            JOIN files f ON f.id = c.file_id
+            WHERE c.repository_id = :repo_id
+              AND c.embedding IS NOT NULL
+              AND c.language = 'markdown'
+            ORDER BY c.embedding <=> CAST(:embedding AS vector)
+            LIMIT :limit
+            """
+        )
+        embedding_literal = "[" + ",".join(str(float(x)) for x in embedding) + "]"
+        rows = db.execute(
+            sql,
+            {"embedding": embedding_literal, "repo_id": str(repository_id), "limit": limit},
+        ).mappings().all()
+        for r in rows:
+            results.append(
+                {
+                    "id": str(r["id"]),
+                    "file": r["path"],
+                    "start_line": r["start_line"],
+                    "end_line": r["end_line"],
+                    "content": r["content"],
+                    "class_name": r["class_name"],
+                    "method_name": r["method_name"],
+                    "language": r["language"],
+                    "score": 1.0 / (1.0 + float(r["distance"] or 0)),
+                }
+            )
+
+    tokens = [t for t in re.split(r"\W+", query) if len(t) > 2][:5]
+    if tokens:
+        filters = [CodeChunk.content.ilike(f"%{t}%") for t in tokens]
+        rows = (
+            db.query(CodeChunk, FileRecord.path)
+            .join(FileRecord, FileRecord.id == CodeChunk.file_id)
+            .filter(
+                CodeChunk.repository_id == repository_id,
+                CodeChunk.language == "markdown",
+                or_(*filters),
+            )
+            .limit(limit)
+            .all()
+        )
+        results.extend([_chunk_to_dict(c, path, score=0.7) for c, path in rows])
+
+    return rerank(results, query, limit=limit)
+
+
 def hybrid_retrieve(db: Session, repository_id: uuid.UUID, query: str, limit: int = 8) -> list[dict]:
     vector_hits = vector_search(db, repository_id, query, limit=limit)
     keyword_hits = keyword_search(db, repository_id, query, limit=limit)
