@@ -23,9 +23,30 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def _ensure_columns() -> None:
+    """Add columns introduced in V2+ to existing volumes (create_all does not alter)."""
+    alters = [
+        "ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS branch VARCHAR(255)",
+        "ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS timings JSONB",
+        "ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS metrics JSONB",
+        "ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS search_tsv tsvector",
+        (
+            "CREATE INDEX IF NOT EXISTS ix_code_chunks_search_tsv "
+            "ON code_chunks USING GIN (search_tsv)"
+        ),
+    ]
+    with engine.begin() as conn:
+        for stmt in alters:
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                pass
+
+
 def init_db() -> None:
     from app import models  # noqa: F401
 
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()

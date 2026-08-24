@@ -20,7 +20,7 @@ def create_repository(db: Session, url: str) -> Repository:
     parsed = parse_github_url(url)
     meta = fetch_repo_metadata(parsed.owner, parsed.name)
     if meta.get("private"):
-        raise ValueError("Only public repositories are supported in V1")
+        raise ValueError("Only public repositories are supported")
     repo = Repository(
         github_url=parsed.html_url,
         owner=parsed.owner,
@@ -45,10 +45,18 @@ def get_repository(db: Session, repo_id: uuid.UUID) -> Repository:
     return repo
 
 
-def enqueue_index(db: Session, repo_id: uuid.UUID, incremental: bool = False) -> IndexingJob:
+def enqueue_index(
+    db: Session,
+    repo_id: uuid.UUID,
+    incremental: bool = False,
+    branch: str | None = None,
+) -> IndexingJob:
     settings = get_settings()
     repo = get_repository(db, repo_id)
     if incremental and not repo.commit_hash:
+        incremental = False
+    # Switching branch forces full re-index
+    if branch and repo.default_branch and branch != repo.default_branch:
         incremental = False
 
     job = IndexingJob(
@@ -56,6 +64,7 @@ def enqueue_index(db: Session, repo_id: uuid.UUID, incremental: bool = False) ->
         status=JobStatus.QUEUED,
         progress=0.0,
         incremental=incremental,
+        branch=branch or repo.default_branch,
     )
     repo.status = RepoStatus.QUEUED
     repo.error = None
@@ -68,10 +77,11 @@ def enqueue_index(db: Session, repo_id: uuid.UUID, incremental: bool = False) ->
             "job_id": str(job.id),
             "repository_id": str(repo.id),
             "incremental": incremental,
+            "branch": branch or repo.default_branch,
         }
     )
     get_redis().rpush(settings.index_queue_key, payload)
-    logger.info("Enqueued index job %s for repo %s", job.id, repo.id)
+    logger.info("Enqueued index job %s for repo %s branch=%s", job.id, repo.id, branch)
     return job
 
 

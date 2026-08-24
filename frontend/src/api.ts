@@ -6,6 +6,7 @@ export type Repo = {
   owner: string;
   name: string;
   status: string;
+  default_branch?: string | null;
   error?: string | null;
 };
 
@@ -14,6 +15,15 @@ export type IndexStatus = {
   status: string;
   progress: number;
   error?: string | null;
+  branch?: string | null;
+  timings?: Record<string, number> | null;
+  metrics?: Record<string, unknown> | null;
+};
+
+export type Branch = {
+  name: string;
+  commit_hash?: string | null;
+  is_indexed: boolean;
 };
 
 export type KnowledgeNode = {
@@ -83,7 +93,6 @@ export function formatUserError(err: unknown, context?: "incremental" | "analyze
       : "Request failed. Please try again.";
   }
 
-  // Truncate huge HTML/error dumps
   const short = cleaned.length > 280 ? `${cleaned.slice(0, 280)}…` : cleaned;
   if (context === "incremental") {
     return `${short} — If this keeps happening, click Analyze for a full re-index.`;
@@ -112,12 +121,13 @@ export const api = {
   createRepo: (url: string) =>
     request<Repo>("/api/repositories", { method: "POST", body: JSON.stringify({ url }) }),
   listRepos: () => request<Repo[]>("/api/repositories"),
-  indexRepo: (id: string, incremental = false) =>
+  indexRepo: (id: string, incremental = false, branch?: string) =>
     request<{ job_id: string; status: string }>(`/api/repositories/${id}/index`, {
       method: "POST",
-      body: JSON.stringify({ incremental }),
+      body: JSON.stringify({ incremental, branch: branch || undefined }),
     }),
   indexStatus: (id: string) => request<IndexStatus>(`/api/repositories/${id}/index-status`),
+  branches: (id: string) => request<Branch[]>(`/api/repositories/${id}/branches`),
   tree: (id: string) => request<KnowledgeNode[]>(`/api/repositories/${id}/tree`),
   graph: (id: string) => request<GraphData>(`/api/repositories/${id}/graph`),
   files: (id: string) => request<FileRow[]>(`/api/repositories/${id}/files`),

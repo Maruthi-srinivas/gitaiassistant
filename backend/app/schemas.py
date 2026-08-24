@@ -27,6 +27,7 @@ class RepoOut(BaseModel):
 
 class IndexRequest(BaseModel):
     incremental: bool = False
+    branch: str | None = None
 
 
 class IndexJobOut(BaseModel):
@@ -35,6 +36,9 @@ class IndexJobOut(BaseModel):
     progress: float = 0.0
     error: str | None = None
     incremental: bool = False
+    branch: str | None = None
+    timings: dict[str, Any] | None = None
+    metrics: dict[str, Any] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -45,6 +49,31 @@ class IndexStatusOut(BaseModel):
     job: IndexJobOut | None = None
     progress: float = 0.0
     error: str | None = None
+    branch: str | None = None
+    timings: dict[str, Any] | None = None
+    metrics: dict[str, Any] | None = None
+
+
+class BranchOut(BaseModel):
+    name: str
+    commit_hash: str | None = None
+    is_indexed: bool = False
+
+
+class CommitOut(BaseModel):
+    sha: str
+    author: str | None = None
+    authored_at: str | None = None
+    message: str | None = None
+    path: str | None = None
+    change_type: str | None = None
+
+
+class ChurnOut(BaseModel):
+    module: str | None = None
+    path: str | None = None
+    change_count: int
+    last_commit_sha: str | None = None
 
 
 class FileOut(BaseModel):
