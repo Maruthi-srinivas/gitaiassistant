@@ -13,7 +13,7 @@ from app.services.graph_service import expand_graph_neighbors, get_graph
 from app.services.knowledge_service import get_knowledge_tree
 
 
-def search_code(db: Session, repository_id: uuid.UUID, query: str, limit: int = 8) -> list[dict]:
+def search_code(db: Session, repository_id: uuid.UUID, query: str, limit: int | None = None) -> list[dict]:
     return hybrid_retrieve(db, repository_id, query, limit=limit)
 
 

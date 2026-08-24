@@ -15,10 +15,16 @@ from app.agents.query_utils import (
     CITATION_RE,
     citations_match,
     classify_query,
-    ensure_citations_footer,
+    extract_symbol_hint,
+    format_history,
+    is_grounded,
+    rewrite_query,
+    ungrounded_refusal,
 )
+from app.config import get_settings
 from app.models import Conversation, Message, Repository
 from app.rag.embeddings import chat_completion
+from app.rag.fusion import reciprocal_rank_fusion
 from app.rag.prompts import build_answer_messages, build_source_check_messages
 
 logger = logging.getLogger(__name__)
@@ -27,20 +33,13 @@ logger = logging.getLogger(__name__)
 class AgentState(TypedDict):
     repository_id: str
     question: str
+    history: str
     kinds: list
     chunks: Annotated[list, operator.add]
     notes: Annotated[list, operator.add]
     answer: str
     sources: list
     citation_ok: bool
-
-
-def _extract_symbol_hint(question: str) -> str | None:
-    m = re.search(r"`([^`]+)`", question)
-    if m:
-        return m.group(1)
-    m = re.search(r"\b([A-Za-z_][A-Za-z0-9_]{2,})\b", question)
-    return m.group(1) if m else None
 
 
 def _db() -> Session:
@@ -54,36 +53,51 @@ def node_classify(state: AgentState) -> dict:
 
 
 def node_retrieve(state: AgentState) -> dict:
-    """Fan-in: always RAG; also CODE/GRAPH/HISTORY/DOCS when classified."""
+    """Fan-in: always RAG (multi-query); also CODE/GRAPH/HISTORY/DOCS when classified."""
     db = _db()
     t0 = time.perf_counter()
+    settings = get_settings()
     try:
         repo_id = uuid.UUID(state["repository_id"])
         q = state["question"]
+        history = state.get("history") or ""
         kinds = set(state.get("kinds") or ["RAG"])
         chunks: list[dict] = []
         notes: list[str] = []
-        hint = _extract_symbol_hint(q)
 
-        # Always RAG
-        chunks.extend(agent_tools.search_code(db, repo_id, q, limit=6))
+        rewritten = rewrite_query(q, history)
+        rewrites = rewritten.get("rewrites") or [q]
+        symbols = rewritten.get("symbols") or []
+        hint = symbols[0] if symbols else extract_symbol_hint(q)
+        # Also pull symbols from history for follow-ups like "who calls that?"
+        if not hint and history:
+            hint = extract_symbol_hint(history)
+
+        # Multi-query hybrid retrieve, then RRF-merge (cap extra embed calls)
+        rag_lists: list[list[dict]] = []
+        for rq in rewrites[:3]:
+            rag_lists.append(agent_tools.search_code(db, repo_id, rq))
+        if rag_lists:
+            chunks.extend(reciprocal_rank_fusion(rag_lists, limit=settings.context_chunks))
 
         if "CODE" in kinds:
-            if hint:
-                chunks.extend(agent_tools.search_symbol(db, repo_id, hint, limit=8))
-                refs = agent_tools.find_references(db, repo_id, hint)
-                notes.append(f"references:{refs[:20]}")
+            for sym in (symbols[:3] if symbols else ([hint] if hint else [])):
+                if not sym:
+                    continue
+                chunks.extend(agent_tools.search_symbol(db, repo_id, sym, limit=8))
+                refs = agent_tools.find_references(db, repo_id, sym)
+                notes.append(f"references:{sym}:{refs[:20]}")
 
         if "GRAPH" in kinds:
-            name = hint or "main"
-            deps = agent_tools.find_dependencies(db, repo_id, name)
-            refs = agent_tools.find_dependents(db, repo_id, name)
-            neighbors = agent_tools.get_graph_path(db, repo_id, [name], hops=2)
-            notes.append(f"dependencies:{deps[:20]}")
-            notes.append(f"dependents:{refs[:20]}")
-            notes.append(f"neighbors:{neighbors[:30]}")
-            agent_tools.tool_knowledge_tree(db, repo_id)
-            chunks.extend(agent_tools.search_symbol(db, repo_id, name, limit=6))
+            name = hint or (symbols[0] if symbols else None)
+            if name:
+                deps = agent_tools.find_dependencies(db, repo_id, name)
+                refs = agent_tools.find_dependents(db, repo_id, name)
+                neighbors = agent_tools.get_graph_path(db, repo_id, [name], hops=2)
+                notes.append(f"dependencies:{deps[:20]}")
+                notes.append(f"dependents:{refs[:20]}")
+                notes.append(f"neighbors:{neighbors[:30]}")
+                chunks.extend(agent_tools.search_symbol(db, repo_id, name, limit=6))
 
         if "HISTORY" in kinds:
             repo = db.get(Repository, repo_id)
@@ -93,13 +107,15 @@ def node_retrieve(state: AgentState) -> dict:
             chunks.extend(hist)
 
         if "DOCS" in kinds:
-            chunks.extend(agent_tools.tool_search_documentation(db, repo_id, q, limit=6))
+            for rq in rewrites[:2]:
+                chunks.extend(agent_tools.tool_search_documentation(db, repo_id, rq, limit=6))
 
         retrieve_ms = round((time.perf_counter() - t0) * 1000, 1)
         logger.info(
-            "retrieve repo=%s kinds=%s chunks=%s ms=%s",
+            "retrieve repo=%s kinds=%s rewrites=%s chunks=%s ms=%s",
             repo_id,
             sorted(kinds),
+            len(rewrites),
             len(chunks),
             retrieve_ms,
         )
@@ -108,34 +124,54 @@ def node_retrieve(state: AgentState) -> dict:
         db.close()
 
 
+def _structured_notes(notes: list[str]) -> str | None:
+    """Keep only deps/refs-style notes for the LLM; drop raw dumps."""
+    kept = []
+    for n in notes:
+        s = str(n)
+        if s.startswith(("dependencies:", "dependents:", "references:", "neighbors:")):
+            kept.append(s)
+    if not kept:
+        return None
+    return "\n".join(kept)
+
+
 def node_answer(state: AgentState) -> dict:
+    settings = get_settings()
     dedup: dict[str, dict] = {}
     for c in state.get("chunks") or []:
         if "file" not in c:
             continue
         key = f"{c['file']}:{c.get('start_line')}:{c.get('end_line')}"
         dedup.setdefault(key, c)
-    context_chunks = list(dedup.values())[:10]
-    notes = state.get("notes") or []
-    if notes:
+    context_chunks = list(dedup.values())[: settings.context_chunks]
+
+    structured = _structured_notes(state.get("notes") or [])
+    if structured:
         context_chunks.append(
             {
                 "file": "_agent_notes",
                 "start_line": 1,
                 "end_line": 1,
-                "content": "\n".join(str(n) for n in notes),
+                "content": structured,
             }
         )
+
     if not context_chunks:
         return {
-            "answer": "I could not find relevant code context for that question. Index the repository first or rephrase.",
+            "answer": (
+                "I could not find relevant code context for that question. "
+                "Index the repository first or rephrase."
+            ),
             "sources": [],
             "citation_ok": False,
         }
-    messages = build_answer_messages(state["question"], context_chunks)
+
+    history = state.get("history") or ""
+    messages = build_answer_messages(state["question"], context_chunks, history=history)
     t0 = time.perf_counter()
     try:
-        answer = chat_completion(messages)
+        answer = chat_completion(messages, temperature=0.0)
     except Exception as exc:  # noqa: BLE001
         logger.exception("LLM call failed")
         top = context_chunks[0]
@@ -175,7 +211,7 @@ def node_source_check(state: AgentState) -> dict:
             }
         )
 
-    ok = citations_match(answer, chunks)
+    ok = is_grounded(answer, chunks)
     if not ok and any(
         str(c.get("file", "")).startswith("commit:") or str(c.get("file", "")).startswith("_git")
         for c in chunks
@@ -185,23 +221,24 @@ def node_source_check(state: AgentState) -> dict:
 
     if ok:
         logger.info("citation_ok=true")
-        return {"citation_ok": True}
+        return {"citation_ok": True, "answer": answer}
 
     logger.info("citation_ok=false; retrying with stricter prompt")
     try:
         messages = build_source_check_messages(state["question"], answer, chunks[:12])
-        revised = chat_completion(messages)
+        revised = chat_completion(messages, temperature=0.0)
         if revised.strip():
             answer = revised
-        ok = citations_match(answer, chunks) or bool(CITATION_RE.search(answer))
+        ok = is_grounded(answer, chunks)
     except Exception as exc:  # noqa: BLE001
         logger.warning("source_check retry failed: %s", exc)
-        answer = ensure_citations_footer(answer, chunks)
-        ok = True
+        ok = False
 
     if not ok:
-        answer = ensure_citations_footer(answer, chunks)
-        ok = True
+        # Do NOT treat a dumped Sources footer as success
+        answer = ungrounded_refusal(chunks)
+        ok = False
+        logger.info("citation_ok=false; returning ungrounded refusal")
 
     return {"answer": answer, "citation_ok": ok}
 
@@ -230,12 +267,18 @@ def get_graph_app():
     return _GRAPH
 
 
-def run_agent(db: Session, repository_id: uuid.UUID, question: str) -> tuple[str, list[dict]]:
+def run_agent(
+    db: Session,
+    repository_id: uuid.UUID,
+    question: str,
+    history: str = "",
+) -> tuple[str, list[dict]]:
     app = get_graph_app()
     result = app.invoke(
         {
             "repository_id": str(repository_id),
             "question": question,
+            "history": history,
             "kinds": [],
             "chunks": [],
             "notes": [],
@@ -268,8 +311,20 @@ def chat(
         db.add(conversation)
         db.flush()
 
+    # Load prior turns before adding the new user message
+    prior = (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation.id)
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+    history = format_history(
+        [{"role": m.role, "content": m.content} for m in prior],
+        max_turns=6,
+    )
+
     db.add(Message(conversation_id=conversation.id, role="user", content=message))
-    answer, sources = run_agent(db, repository_id, message)
+    answer, sources = run_agent(db, repository_id, message, history=history)
     db.add(
         Message(
             conversation_id=conversation.id,

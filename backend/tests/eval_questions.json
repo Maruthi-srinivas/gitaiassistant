@@ -1,0 +1,77 @@
+[
+  {
+    "question": "Where is the application factory defined?",
+    "must_cite_path_substr": "app.py",
+    "must_not_cite": ["setup.py", "conftest.py"]
+  },
+  {
+    "question": "Where is `create_app` defined?",
+    "must_cite_path_substr": "app.py",
+    "must_not_cite": []
+  },
+  {
+    "question": "How do I install Flask? Check the README",
+    "must_cite_path_substr": "README",
+    "must_not_cite": []
+  },
+  {
+    "question": "What does the Flask class do?",
+    "must_cite_path_substr": "app.py",
+    "must_not_cite": []
+  },
+  {
+    "question": "Where is request routing handled?",
+    "must_cite_path_substr": "app.py",
+    "must_not_cite": []
+  },
+  {
+    "question": "Who depends on the Flask application object?",
+    "must_cite_path_substr": "app.py",
+    "must_not_cite": []
+  },
+  {
+    "question": "Where are blueprints registered?",
+    "must_cite_path_substr": "app.py",
+    "must_not_cite": []
+  },
+  {
+    "question": "How does session cookie signing work?",
+    "must_cite_path_substr": "sessions",
+    "must_not_cite": []
+  },
+  {
+    "question": "Where is URL matching implemented?",
+    "must_cite_path_substr": "app.py",
+    "must_not_cite": []
+  },
+  {
+    "question": "What is the Config class?",
+    "must_cite_path_substr": "config",
+    "must_not_cite": []
+  },
+  {
+    "question": "Where are HTTP exceptions defined?",
+    "must_cite_path_substr": "exceptions",
+    "must_not_cite": []
+  },
+  {
+    "question": "How does jsonify work?",
+    "must_cite_path_substr": "json",
+    "must_not_cite": []
+  },
+  {
+    "question": "Where is the development server started?",
+    "must_cite_path_substr": "cli",
+    "must_not_cite": []
+  },
+  {
+    "question": "Getting started with Flask documentation",
+    "must_cite_path_substr": "README",
+    "must_not_cite": []
+  },
+  {
+    "question": "Where is before_request hook handling?",
+    "must_cite_path_substr": "app.py",
+    "must_not_cite": []
+  }
+]

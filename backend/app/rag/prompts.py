@@ -1,10 +1,15 @@
 ANSWER_SYSTEM = """You are a repository AI assistant. Answer questions using ONLY the provided source context.
+Do not invent file paths, APIs, function names, or behavior that is not in the snippets.
 Always cite sources using the format path:start-end (example: src/auth/service.py:10-42).
 For git-history context you may also cite commit:sha (example: commit:abc1234).
-If the context is insufficient, say what is missing. Be precise and technical."""
+If the context is insufficient, clearly say what is missing and that it was not found in the indexed sources.
+Be precise and technical. Every factual claim must be backed by a citation."""
 
-SOURCE_CHECK_SYSTEM = """Rewrite the answer so every factual claim is backed by a citation in the form path:start-end
-or commit:sha drawn from the provided sources list. Do not invent file paths. Keep the answer concise."""
+SOURCE_CHECK_SYSTEM = """Rewrite the answer so every factual claim is entailed by the provided snippets
+and backed by a citation in the form path:start-end or commit:sha from the allowed sources list.
+Strip or remove any claim that is not supported by the snippets.
+Do not invent file paths or APIs. If nothing is grounded, say it was not found in the indexed sources.
+Keep the answer concise. Return the corrected answer only."""
 
 
 def build_context_block(chunks: list[dict]) -> str:
@@ -16,13 +21,19 @@ def build_context_block(chunks: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def build_answer_messages(question: str, chunks: list[dict]) -> list[dict]:
+def build_answer_messages(
+    question: str, chunks: list[dict], history: str = ""
+) -> list[dict]:
     context = build_context_block(chunks)
+    hist = f"\nConversation so far:\n{history}\n" if history.strip() else ""
     return [
         {"role": "system", "content": ANSWER_SYSTEM},
         {
             "role": "user",
-            "content": f"Question: {question}\n\nSource context:\n{context}\n\nProvide an answer with citations.",
+            "content": (
+                f"{hist}Question: {question}\n\nSource context:\n{context}\n\n"
+                "Provide an answer with citations, using only the source context."
+            ),
         },
     ]
 

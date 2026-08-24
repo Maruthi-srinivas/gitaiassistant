@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     index_rate_limit_per_minute: int = 10
     git_clone_depth: int = 200
     git_history_max_commits: int = 200
+    # RAG retrieval: heuristic (default) or llm for optional cross-chunk scoring
+    rerank_mode: str = "heuristic"
+    retrieve_candidates: int = 40
+    context_chunks: int = 10
 
 
 @lru_cache
