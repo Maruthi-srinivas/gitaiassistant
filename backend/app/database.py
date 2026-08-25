@@ -34,6 +34,8 @@ def _ensure_columns() -> None:
             "CREATE INDEX IF NOT EXISTS ix_code_chunks_search_tsv "
             "ON code_chunks USING GIN (search_tsv)"
         ),
+        "ALTER TABLE repositories ADD COLUMN IF NOT EXISTS owner_user_id UUID",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id UUID",
     ]
     with engine.begin() as conn:
         for stmt in alters:

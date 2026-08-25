@@ -4,6 +4,7 @@ from tree_sitter import Language, Parser
 import tree_sitter_javascript as tsjavascript
 
 from app.parsers.base import ParseResult, ParsedDependency, ParsedSymbol, _line, _node_text
+from app.parsers.edge_heuristics import event_edge_type
 
 _JS_LANGUAGE = Language(tsjavascript.language())
 
@@ -58,6 +59,8 @@ def _walk_js_like(root, source: bytes) -> ParseResult:
                     )
                 )
                 _extract_calls(node, full, result, source)
+                if name == "constructor" and parent_class:
+                    _extract_js_constructor_injections(node, parent_class, result, source)
 
         if node.type == "lexical_declaration":
             for child in node.children:
@@ -99,6 +102,19 @@ def _walk_js_like(root, source: bytes) -> ParseResult:
     return result
 
 
+def _extract_js_constructor_injections(node, source_name: str, result: ParseResult, source: bytes) -> None:
+    params = node.child_by_field_name("parameters")
+    if not params:
+        return
+    for child in params.children:
+        if child.type == "identifier":
+            target = _node_text(source, child)
+            if target:
+                result.dependencies.append(
+                    ParsedDependency(source_name=source_name, target_name=target, type="INJECTS")
+                )
+
+
 def _extract_calls(node, source_name: str, result: ParseResult, source: bytes) -> None:
     stack = list(node.children)
     while stack:
@@ -110,4 +126,9 @@ def _extract_calls(node, source_name: str, result: ParseResult, source: bytes) -
                 result.dependencies.append(
                     ParsedDependency(source_name=source_name, target_name=target, type="CALLS")
                 )
+                event = event_edge_type(target)
+                if event:
+                    result.dependencies.append(
+                        ParsedDependency(source_name=source_name, target_name=target, type=event)
+                    )
         stack.extend(current.children)

@@ -300,14 +300,19 @@ def chat(
     repository_id: uuid.UUID,
     message: str,
     conversation_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> tuple[Conversation, str, list[dict]]:
     conversation = None
     if conversation_id:
         conversation = db.get(Conversation, conversation_id)
-        if not conversation or conversation.repository_id != repository_id:
+        if (
+            not conversation
+            or conversation.repository_id != repository_id
+            or (user_id and conversation.user_id and conversation.user_id != user_id)
+        ):
             conversation = None
     if not conversation:
-        conversation = Conversation(repository_id=repository_id)
+        conversation = Conversation(repository_id=repository_id, user_id=user_id)
         db.add(conversation)
         db.flush()
 

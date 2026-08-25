@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     rerank_mode: str = "heuristic"
     retrieve_candidates: int = 40
     context_chunks: int = 10
+    jwt_secret: str = "dev-jwt-secret-change-me"
+    jwt_expire_minutes: int = 10080
+    index_max_attempts: int = 3
 
 
 @lru_cache

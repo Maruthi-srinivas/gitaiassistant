@@ -74,6 +74,13 @@ LANG_BY_EXT = {
     ".ts": "typescript",
     ".tsx": "typescript",
     ".java": "java",
+    ".h": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".go": "go",
     ".md": "markdown",
     ".markdown": "markdown",
     ".mdx": "markdown",
@@ -87,19 +94,22 @@ def repo_local_path(repo_id: str) -> Path:
     return path
 
 
-def _clone_url(parsed: ParsedRepoUrl) -> str:
+def _clone_url(parsed: ParsedRepoUrl, token: str | None = None) -> str:
     settings = get_settings()
-    if settings.github_token:
-        return f"https://{settings.github_token}@github.com/{parsed.owner}/{parsed.name}.git"
+    auth = token or settings.github_token
+    if auth:
+        return f"https://{auth}@github.com/{parsed.owner}/{parsed.name}.git"
     return parsed.clone_url
 
 
-def clone_repository(parsed: ParsedRepoUrl, dest: Path, branch: str | None = None) -> str:
+def clone_repository(
+    parsed: ParsedRepoUrl, dest: Path, branch: str | None = None, token: str | None = None
+) -> str:
     if dest.exists():
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     settings = get_settings()
-    url = _clone_url(parsed)
+    url = _clone_url(parsed, token=token)
     depth = max(1, int(settings.git_clone_depth or 200))
     logger.info("Cloning %s into %s (depth=%s, branch=%s)", parsed.html_url, dest, depth, branch)
     kwargs: dict = {"depth": depth, "no_single_branch": True}

@@ -7,9 +7,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.auth import create_access_token, get_current_user, hash_password, verify_password
 from app.config import get_settings
 from app.database import get_db
-from app.models import Dependency, FileRecord, RepositoryBranch, Symbol
+from app.models import Dependency, FileRecord, RepositoryBranch, Symbol, User
 from app.schemas import (
     BranchOut,
     ChatRequest,
@@ -25,10 +26,15 @@ from app.schemas import (
     IndexJobOut,
     IndexRequest,
     IndexStatusOut,
+    LoginRequest,
+    RegisterRequest,
     RepoCreate,
     RepoOut,
     SourceRef,
     SymbolOut,
+    TokenResponse,
+    UserOut,
+    UserUpdate,
 )
 from app.agents.workflow import chat as agent_chat
 from app.services.cache import cache_get, cache_set, chat_cache_key
@@ -59,10 +65,49 @@ def health():
     return {"status": "ok"}
 
 
+@router.post("/auth/register", response_model=TokenResponse, status_code=201)
+def register(body: RegisterRequest, db: Session = Depends(get_db)):
+    email = body.email.strip().lower()
+    if not email or len(body.password) < 8:
+        raise HTTPException(status_code=400, detail="Email and password (8+ chars) required")
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(status_code=409, detail="Email already registered")
+    user = User(email=email, password_hash=hash_password(body.password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return TokenResponse(access_token=create_access_token(user.id, user.email))
+
+
+@router.post("/auth/login", response_model=TokenResponse)
+def login(body: LoginRequest, db: Session = Depends(get_db)):
+    email = body.email.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if not user or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return TokenResponse(access_token=create_access_token(user.id, user.email))
+
+
+@router.get("/auth/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user)):
+    return UserOut(id=user.id, email=user.email, has_github_token=bool(user.github_token))
+
+
+@router.patch("/auth/me", response_model=UserOut)
+def update_me(body: UserUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if body.github_token is not None:
+        user.github_token = body.github_token.strip() or None
+        db.commit()
+        db.refresh(user)
+    return UserOut(id=user.id, email=user.email, has_github_token=bool(user.github_token))
+
+
 @router.post("/repositories", response_model=RepoOut, status_code=201)
-def create_repo(data: RepoCreate, db: Session = Depends(get_db)):
+def create_repo(
+    data: RepoCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
     try:
-        repo = create_repository(db, data.url)
+        repo = create_repository(db, data.url, owner=user)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -72,21 +117,27 @@ def create_repo(data: RepoCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/repositories", response_model=list[RepoOut])
-def list_repos(db: Session = Depends(get_db)):
-    return list_repositories(db)
+def list_repos(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    return list_repositories(db, user_id=user.id)
 
 
 @router.get("/repositories/{repo_id}", response_model=RepoOut)
-def get_repo(repo_id: uuid.UUID, db: Session = Depends(get_db)):
-    return get_repository(db, repo_id)
+def get_repo(
+    repo_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    return get_repository(db, repo_id, user_id=user.id)
 
 
 @router.post("/repositories/{repo_id}/index", response_model=IndexJobOut)
 def index_repo(
-    repo_id: uuid.UUID, body: IndexRequest | None = None, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    body: IndexRequest | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     settings = get_settings()
-    check_rate_limit(f"index:{repo_id}", settings.index_rate_limit_per_minute)
+    check_rate_limit(f"index:{user.id}", settings.index_rate_limit_per_minute)
+    get_repository(db, repo_id, user_id=user.id)
     incremental = body.incremental if body else False
     branch = body.branch if body else None
     job = enqueue_index(db, repo_id, incremental=incremental, branch=branch)
@@ -103,8 +154,10 @@ def index_repo(
 
 
 @router.get("/repositories/{repo_id}/index-status", response_model=IndexStatusOut)
-def index_status(repo_id: uuid.UUID, db: Session = Depends(get_db)):
-    repo = get_repository(db, repo_id)
+def index_status(
+    repo_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    repo = get_repository(db, repo_id, user_id=user.id)
     job = latest_job(db, repo_id)
     return IndexStatusOut(
         repository_id=repo.id,
@@ -132,8 +185,10 @@ def index_status(repo_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/repositories/{repo_id}/branches", response_model=list[BranchOut])
-def list_branches(repo_id: uuid.UUID, db: Session = Depends(get_db)):
-    get_repository(db, repo_id)
+def list_branches(
+    repo_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    get_repository(db, repo_id, user_id=user.id)
     rows = (
         db.query(RepositoryBranch)
         .filter(RepositoryBranch.repository_id == repo_id)
@@ -151,8 +206,9 @@ def history_for_path(
     path: str = Query("", description="File path or symbol hint"),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    get_repository(db, repo_id)
+    get_repository(db, repo_id, user_id=user.id)
     return [CommitOut(**c) for c in commits_for_path(db, repo_id, path, limit=limit)]
 
 
@@ -162,8 +218,9 @@ def history_churn(
     limit: int = Query(20, ge=1, le=100),
     by: str = Query("module"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    get_repository(db, repo_id)
+    get_repository(db, repo_id, user_id=user.id)
     if by not in {"module", "file"}:
         raise HTTPException(status_code=400, detail="by must be 'module' or 'file'")
     if by == "file":
@@ -187,21 +244,26 @@ def history_compare(
     from_sha: str = Query(..., alias="from"),
     to_sha: str = Query(..., alias="to"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    repo = get_repository(db, repo_id)
+    repo = get_repository(db, repo_id, user_id=user.id)
     dest = Path(repo.local_path) if repo.local_path else repo_local_path(str(repo.id))
     return compare_commits(db, repo_id, dest if dest.exists() else None, from_sha, to_sha)
 
 
 @router.get("/repositories/{repo_id}/tree")
-def repo_tree(repo_id: uuid.UUID, db: Session = Depends(get_db)):
-    get_repository(db, repo_id)
+def repo_tree(
+    repo_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    get_repository(db, repo_id, user_id=user.id)
     return get_knowledge_tree(db, repo_id)
 
 
 @router.get("/repositories/{repo_id}/graph", response_model=GraphOut)
-def repo_graph(repo_id: uuid.UUID, db: Session = Depends(get_db)):
-    get_repository(db, repo_id)
+def repo_graph(
+    repo_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    get_repository(db, repo_id, user_id=user.id)
     nodes, edges = get_graph(db, repo_id)
     return GraphOut(
         nodes=[GraphNodeOut(id=n.id, type=n.type, name=n.name, file_id=n.file_id) for n in nodes],
@@ -218,14 +280,18 @@ def repo_graph(repo_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/repositories/{repo_id}/files", response_model=list[FileOut])
-def list_files(repo_id: uuid.UUID, db: Session = Depends(get_db)):
-    get_repository(db, repo_id)
+def list_files(
+    repo_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    get_repository(db, repo_id, user_id=user.id)
     return db.query(FileRecord).filter(FileRecord.repository_id == repo_id).order_by(FileRecord.path).all()
 
 
 @router.get("/repositories/{repo_id}/files/{file_id}", response_model=FileDetailOut)
-def get_file(repo_id: uuid.UUID, file_id: uuid.UUID, db: Session = Depends(get_db)):
-    get_repository(db, repo_id)
+def get_file(
+    repo_id: uuid.UUID, file_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    get_repository(db, repo_id, user_id=user.id)
     f = db.get(FileRecord, file_id)
     if not f or f.repository_id != repo_id:
         raise HTTPException(status_code=404, detail="File not found")
@@ -233,8 +299,10 @@ def get_file(repo_id: uuid.UUID, file_id: uuid.UUID, db: Session = Depends(get_d
 
 
 @router.get("/repositories/{repo_id}/symbols/{symbol}", response_model=list[SymbolOut])
-def get_symbols(repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_db)):
-    get_repository(db, repo_id)
+def get_symbols(
+    repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    get_repository(db, repo_id, user_id=user.id)
     rows = (
         db.query(Symbol, FileRecord.path)
         .join(FileRecord, FileRecord.id == Symbol.file_id)
@@ -257,8 +325,10 @@ def get_symbols(repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_db)):
 
 
 @router.get("/repositories/{repo_id}/dependencies/{symbol}", response_model=list[DependencyOut])
-def get_dependencies(repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_db)):
-    get_repository(db, repo_id)
+def get_dependencies(
+    repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    get_repository(db, repo_id, user_id=user.id)
     rows = (
         db.query(Dependency)
         .filter(Dependency.repository_id == repo_id, Dependency.source_name.ilike(f"%{symbol}%"))
@@ -269,8 +339,10 @@ def get_dependencies(repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_
 
 
 @router.get("/repositories/{repo_id}/references/{symbol}", response_model=list[DependencyOut])
-def get_references(repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_db)):
-    get_repository(db, repo_id)
+def get_references(
+    repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    get_repository(db, repo_id, user_id=user.id)
     rows = (
         db.query(Dependency)
         .filter(Dependency.repository_id == repo_id, Dependency.target_name.ilike(f"%{symbol}%"))
@@ -281,10 +353,15 @@ def get_references(repo_id: uuid.UUID, symbol: str, db: Session = Depends(get_db
 
 
 @router.post("/repositories/{repo_id}/chat", response_model=ChatResponse)
-def chat_repo(repo_id: uuid.UUID, body: ChatRequest, db: Session = Depends(get_db)):
+def chat_repo(
+    repo_id: uuid.UUID,
+    body: ChatRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     settings = get_settings()
-    check_rate_limit(f"chat:{repo_id}", settings.chat_rate_limit_per_minute)
-    get_repository(db, repo_id)
+    check_rate_limit(f"chat:{user.id}", settings.chat_rate_limit_per_minute)
+    get_repository(db, repo_id, user_id=user.id)
 
     if body.conversation_id is None:
         cached = cache_get(chat_cache_key(str(repo_id), body.message))
@@ -292,7 +369,7 @@ def chat_repo(repo_id: uuid.UUID, body: ChatRequest, db: Session = Depends(get_d
             return ChatResponse(**cached)
 
     conversation, answer, sources = agent_chat(
-        db, repo_id, body.message, conversation_id=body.conversation_id
+        db, repo_id, body.message, conversation_id=body.conversation_id, user_id=user.id
     )
     response = ChatResponse(
         conversation_id=conversation.id,

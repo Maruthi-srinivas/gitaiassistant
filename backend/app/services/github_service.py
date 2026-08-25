@@ -35,15 +35,16 @@ def parse_github_url(url: str) -> ParsedRepoUrl:
     )
 
 
-def fetch_repo_metadata(owner: str, name: str) -> dict:
+def fetch_repo_metadata(owner: str, name: str, token: str | None = None) -> dict:
     settings = get_settings()
     headers = {"Accept": "application/vnd.github+json"}
-    if settings.github_token:
-        headers["Authorization"] = f"Bearer {settings.github_token}"
+    auth = token or settings.github_token
+    if auth:
+        headers["Authorization"] = f"Bearer {auth}"
     with httpx.Client(timeout=30.0) as client:
         resp = client.get(f"https://api.github.com/repos/{owner}/{name}", headers=headers)
         if resp.status_code == 404:
-            raise ValueError("Repository not found or not public")
+            raise ValueError("Repository not found or not accessible (private repos need GITHUB_TOKEN)")
         resp.raise_for_status()
         data = resp.json()
         return {

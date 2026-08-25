@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   api,
   formatUserError,
+  getToken,
+  setToken,
   type Branch,
   type FileDetail,
   type FileRow,
@@ -9,7 +11,9 @@ import {
   type IndexStatus,
   type KnowledgeNode,
   type Repo,
+  type User,
 } from "./api";
+import AuthScreen from "./AuthScreen";
 import ChatPanel, { type ChatMessage } from "./ChatPanel";
 import GraphView from "./GraphView";
 import LeftRail from "./LeftRail";
@@ -25,6 +29,8 @@ function normalizeUrl(value: string): string {
 type NavItem = "home" | "repositories" | "chats" | "knowledge" | "settings";
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(!getToken());
   const [url, setUrl] = useState("https://github.com/pallets/flask");
   const [repo, setRepo] = useState<Repo | null>(null);
   const [status, setStatus] = useState<IndexStatus | null>(null);
@@ -50,6 +56,25 @@ export default function App() {
   >([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBranch, setSelectedBranch] = useState("");
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setAuthReady(true);
+      return;
+    }
+    api
+      .me()
+      .then((u) => {
+        setUser(u);
+        setAuthReady(true);
+      })
+      .catch(() => {
+        setToken(null);
+        setUser(null);
+        setAuthReady(true);
+      });
+  }, []);
 
   const completed = status?.status === "COMPLETED";
   const canIncremental = Boolean(
@@ -282,6 +307,19 @@ export default function App() {
         ? "Agent Online"
         : "Ready";
 
+  if (!authReady) {
+    return <div className="auth-screen">Loading…</div>;
+  }
+  if (!user) {
+    return (
+      <AuthScreen
+        onAuthed={() => {
+          api.me().then(setUser).catch(() => setUser(null));
+        }}
+      />
+    );
+  }
+
   return (
     <>
       <WorkspaceShell
@@ -299,6 +337,11 @@ export default function App() {
                 setActiveNav("repositories");
                 analyze(false);
               }
+            }}
+            userEmail={user.email}
+            onLogout={() => {
+              setToken(null);
+              setUser(null);
             }}
           />
         }

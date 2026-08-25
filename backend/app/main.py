@@ -4,15 +4,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
 from app.config import get_settings
 from app.database import init_db
+from app.middleware import RequestIdMiddleware
 
 settings = get_settings()
 
-app = FastAPI(title="GitHub Repository AI Assistant", version="2.0.0")
+app = FastAPI(title="GitHub Repository AI Assistant", version="5.0.0")
 
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(RequestIdMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins or ["*"],
+    allow_origins=origins or ["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

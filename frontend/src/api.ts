@@ -100,15 +100,42 @@ export function formatUserError(err: unknown, context?: "incremental" | "analyze
   return short;
 }
 
+const TOKEN_KEY = "beai_token";
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string | null) {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+
+export type User = {
+  id: string;
+  email: string;
+  has_github_token: boolean;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
+  const token = getToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
   try {
     res = await fetch(`${API_BASE}${path}`, {
-      headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
       ...init,
+      headers,
     });
   } catch (err) {
     throw new Error(err instanceof Error ? err.message : "Failed to fetch");
+  }
+  if (res.status === 401) {
+    setToken(null);
+    throw new Error("Please sign in again.");
   }
   if (!res.ok) {
     const text = await res.text();
@@ -118,6 +145,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  register: (email: string, password: string) =>
+    request<{ access_token: string }>("/api/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  login: (email: string, password: string) =>
+    request<{ access_token: string }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  me: () => request<User>("/api/auth/me"),
+  updateMe: (github_token: string) =>
+    request<User>("/api/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify({ github_token }),
+    }),
   createRepo: (url: string) =>
     request<Repo>("/api/repositories", { method: "POST", body: JSON.stringify({ url }) }),
   listRepos: () => request<Repo[]>("/api/repositories"),

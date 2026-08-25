@@ -4,6 +4,7 @@ from tree_sitter import Language, Parser
 import tree_sitter_python as tspython
 
 from app.parsers.base import ParseResult, ParsedDependency, ParsedSymbol, _line, _node_text
+from app.parsers.edge_heuristics import event_edge_type
 
 _PY_LANGUAGE = Language(tspython.language())
 
@@ -54,6 +55,8 @@ def parse_python(content: str) -> ParseResult:
                     )
                 )
                 _extract_calls(node, full, result, source)
+                if name == "__init__":
+                    _extract_init_injections(node, parent_class or full, result, source)
 
         if node.type == "import_statement":
             for child in node.children:
@@ -100,6 +103,21 @@ def parse_python(content: str) -> ParseResult:
     return result
 
 
+def _extract_init_injections(node, source_name: str, result: ParseResult, source: bytes) -> None:
+    params = node.child_by_field_name("parameters")
+    if not params:
+        return
+    for child in params.children:
+        if child.type == "typed_parameter":
+            type_node = child.child_by_field_name("type")
+            if type_node:
+                target = _node_text(source, type_node).split("[")[0].strip()
+                if target:
+                    result.dependencies.append(
+                        ParsedDependency(source_name=source_name, target_name=target, type="INJECTS")
+                    )
+
+
 def _extract_calls(node, source_name: str, result: ParseResult, source: bytes) -> None:
     stack = list(node.children)
     while stack:
@@ -111,4 +129,23 @@ def _extract_calls(node, source_name: str, result: ParseResult, source: bytes) -
                 result.dependencies.append(
                     ParsedDependency(source_name=source_name, target_name=target, type="CALLS")
                 )
+                event = event_edge_type(target)
+                if event:
+                    result.dependencies.append(
+                        ParsedDependency(source_name=source_name, target_name=target, type=event)
+                    )
+                leaf = target.split(".")[-1]
+                if leaf == "Depends":
+                    args = current.child_by_field_name("arguments")
+                    if args:
+                        for arg in args.children:
+                            if arg.type in {"identifier", "attribute", "call"}:
+                                inj = _node_text(source, arg)
+                                if inj:
+                                    result.dependencies.append(
+                                        ParsedDependency(
+                                            source_name=source_name, target_name=inj, type="INJECTS"
+                                        )
+                                    )
+                                    break
         stack.extend(current.children)

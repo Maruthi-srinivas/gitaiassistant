@@ -18,6 +18,7 @@ from app.models import (
     RepoStatus,
     Repository,
     Symbol,
+    User,
 )
 from app.services.file_discovery import (
     changed_files,
@@ -67,15 +68,15 @@ def run_indexing_job(
     job_id: uuid.UUID,
     incremental: bool = False,
     branch: str | None = None,
-) -> None:
+) -> bool:
     job = db.get(IndexingJob, job_id)
     if not job:
         logger.error("Job %s not found", job_id)
-        return
+        return False
     repo = db.get(Repository, job.repository_id)
     if not repo:
         logger.error("Repository for job %s not found", job_id)
-        return
+        return False
 
     timings: dict[str, float] = {}
     metrics: dict = {}
@@ -84,6 +85,8 @@ def run_indexing_job(
     try:
         parsed = parse_github_url(repo.github_url)
         dest = repo_local_path(str(repo.id))
+        owner = db.get(User, repo.owner_user_id) if repo.owner_user_id else None
+        clone_token = owner.github_token if owner and owner.github_token else None
         old_commit = repo.commit_hash
         target_branch = branch or job.branch or repo.default_branch
         if branch:
@@ -104,7 +107,7 @@ def run_indexing_job(
                     repo.id,
                     fetch_exc,
                 )
-                commit_hash = clone_repository(parsed, dest, branch=target_branch)
+                commit_hash = clone_repository(parsed, dest, branch=target_branch, token=clone_token)
                 changed = None
                 incremental = False
                 job.incremental = False
@@ -126,11 +129,11 @@ def run_indexing_job(
                     changed = None
                     incremental = False
                 except Exception:  # noqa: BLE001
-                    commit_hash = clone_repository(parsed, dest, branch=target_branch)
+                    commit_hash = clone_repository(parsed, dest, branch=target_branch, token=clone_token)
                     changed = None
                     incremental = False
             else:
-                commit_hash = clone_repository(parsed, dest, branch=target_branch)
+                commit_hash = clone_repository(parsed, dest, branch=target_branch, token=clone_token)
                 changed = None
                 incremental = False
 
@@ -296,3 +299,5 @@ def run_indexing_job(
             job.timings = timings or {"total_ms": round((time.perf_counter() - t0) * 1000, 1)}
             job.metrics = metrics or {}
             _set_status(db, repo, job, JobStatus.FAILED, job.progress or 0.0, error=msg[:2000])
+        return False
+    return True

@@ -4,6 +4,8 @@ type Props = {
   searchValue: string;
   onSearchChange: (value: string) => void;
   onSearchSubmit: () => void;
+  userEmail?: string;
+  onLogout?: () => void;
 };
 
 export default function TopHeader({
@@ -12,6 +14,8 @@ export default function TopHeader({
   searchValue,
   onSearchChange,
   onSearchSubmit,
+  userEmail,
+  onLogout,
 }: Props) {
   return (
     <header className="top-header">
@@ -56,12 +60,10 @@ export default function TopHeader({
             />
           </svg>
         </button>
-        <button type="button" className="header-profile" aria-label="User menu">
-          <span className="avatar">MS</span>
-          <span className="profile-name">Maruthi Srinivas</span>
-          <svg className="chevron" viewBox="0 0 24 24" aria-hidden="true">
-            <path fill="none" stroke="currentColor" strokeWidth="2" d="M6 9l6 6 6-6" />
-          </svg>
+        <button type="button" className="header-profile" aria-label="User menu" onClick={onLogout}>
+          <span className="avatar">{(userEmail || "?").slice(0, 2).toUpperCase()}</span>
+          <span className="profile-name">{userEmail || "Account"}</span>
+          <span className="profile-logout">Sign out</span>
         </button>
       </div>
     </header>

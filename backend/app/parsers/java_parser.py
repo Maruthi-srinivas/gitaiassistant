@@ -4,6 +4,7 @@ from tree_sitter import Language, Parser
 import tree_sitter_java as tsjava
 
 from app.parsers.base import ParseResult, ParsedDependency, ParsedSymbol, _line, _node_text
+from app.parsers.edge_heuristics import event_edge_type, is_inject_annotation
 
 _JAVA_LANGUAGE = Language(tsjava.language())
 
@@ -84,6 +85,7 @@ def parse_java(content: str) -> ParseResult:
                     )
                 )
                 _extract_calls(node, full, result, source)
+                _extract_java_injections(node, parent_class or full, result, source)
 
         if node.type == "constructor_declaration":
             name_node = node.child_by_field_name("name")
@@ -101,6 +103,7 @@ def parse_java(content: str) -> ParseResult:
                 )
             )
             _extract_calls(node, full, result, source)
+            _extract_java_injections(node, parent_class or full, result, source)
 
         if node.type == "import_declaration":
             text = _node_text(source, node).strip().rstrip(";")
@@ -130,6 +133,33 @@ def parse_java(content: str) -> ParseResult:
     return result
 
 
+def _extract_java_injections(node, source_name: str, result: ParseResult, source: bytes) -> None:
+    stack = list(node.children)
+    saw_inject_ann = False
+    while stack:
+        current = stack.pop()
+        if current.type in {"marker_annotation", "annotation"}:
+            name_node = current.child_by_field_name("name")
+            ann = _node_text(source, name_node) if name_node else _node_text(source, current)
+            if is_inject_annotation(ann) or event_edge_type(ann) == "CONSUMES":
+                if is_inject_annotation(ann):
+                    saw_inject_ann = True
+                event = event_edge_type(ann)
+                if event:
+                    result.dependencies.append(
+                        ParsedDependency(source_name=source_name, target_name=ann, type=event)
+                    )
+        if current.type == "formal_parameter":
+            type_node = current.child_by_field_name("type")
+            if type_node and (saw_inject_ann or node.type == "constructor_declaration"):
+                target = _node_text(source, type_node).split("<")[0].strip()
+                if target:
+                    result.dependencies.append(
+                        ParsedDependency(source_name=source_name, target_name=target, type="INJECTS")
+                    )
+        stack.extend(current.children)
+
+
 def _extract_calls(node, source_name: str, result: ParseResult, source: bytes) -> None:
     stack = list(node.children)
     while stack:
@@ -140,7 +170,6 @@ def _extract_calls(node, source_name: str, result: ParseResult, source: bytes) -
                 target = _node_text(source, name_node)
             else:
                 target = _node_text(source, current)
-            # Prefer simple method name; keep object.method when present as object field
             obj = current.child_by_field_name("object")
             if obj and name_node:
                 target = f"{_node_text(source, obj)}.{_node_text(source, name_node)}"
@@ -148,4 +177,9 @@ def _extract_calls(node, source_name: str, result: ParseResult, source: bytes) -
                 result.dependencies.append(
                     ParsedDependency(source_name=source_name, target_name=target, type="CALLS")
                 )
+                event = event_edge_type(target)
+                if event:
+                    result.dependencies.append(
+                        ParsedDependency(source_name=source_name, target_name=target, type=event)
+                    )
         stack.extend(current.children)

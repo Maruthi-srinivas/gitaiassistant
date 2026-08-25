@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { api } from "./api";
 import type { Branch, IndexStatus, KnowledgeNode, Repo } from "./api";
 import KnowledgeTree from "./KnowledgeTree";
 
@@ -156,6 +158,9 @@ export default function LeftRail({
               onChange={(e) => onUrlChange(e.target.value)}
               placeholder="https://github.com/owner/repo"
             />
+            <p className="rail-hint">
+              Private repos need a GitHub token in the server environment (or your account settings).
+            </p>
             {(branches.length > 0 || selectedBranch) && (
               <label className="rail-branch">
                 <span>Branch</span>
@@ -219,9 +224,45 @@ export default function LeftRail({
 
       {activeNav === "settings" && (
         <div className="settings-panel">
-          <p className="widget-muted">Settings coming soon.</p>
+          <p className="widget-muted">Personal GitHub token for private repositories.</p>
+          <GithubTokenForm />
         </div>
       )}
+    </div>
+  );
+}
+
+function GithubTokenForm() {
+  const [token, setToken] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    setStatus(null);
+    try {
+      await api.updateMe(token);
+      setStatus("Saved. Private repos will use this token.");
+      setToken("");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Could not save token");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="github-token-form">
+      <input
+        type="password"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="ghp_…"
+      />
+      <button type="button" disabled={busy || !token.trim()} onClick={() => void save()}>
+        Save token
+      </button>
+      {status ? <p className="rail-hint">{status}</p> : null}
     </div>
   );
 }

@@ -12,6 +12,8 @@ export const EDGE_TYPES = [
   "IMPORTS",
   "EXTERNAL",
   "INJECTS",
+  "PUBLISHES",
+  "CONSUMES",
   "CONTAINS",
 ] as const;
 
@@ -24,6 +26,8 @@ export const DEFAULT_ENABLED_TYPES = new Set<string>([
   "DEPENDS_ON",
   "USES",
   "INJECTS",
+  "PUBLISHES",
+  "CONSUMES",
   "CONTAINS",
 ]);
 
@@ -36,6 +40,8 @@ export const EDGE_COLORS: Record<string, string> = {
   IMPORTS: "#6f859c",
   EXTERNAL: "#4a5562",
   INJECTS: "#2bb673",
+  PUBLISHES: "#f59e0b",
+  CONSUMES: "#fb7185",
   CONTAINS: "#7ec8c8",
 };
 
