@@ -115,14 +115,85 @@ def _extract_js_constructor_injections(node, source_name: str, result: ParseResu
                 )
 
 
+_MAX_CALL_NAME = 512
+_WRAPPER_TYPES = frozenset(
+    {
+        "parenthesized_expression",
+        "non_null_expression",
+        "await_expression",
+        "as_expression",
+        "type_assertion",
+        "satisfies_expression",
+        "optional_chain",
+    }
+)
+
+
+def _compact_js_callee(source: bytes, node) -> str:
+    """Resolve a call_expression callee to identifiers only.
+
+    Chained calls like `a.split(...).filter(() => { ... }).join(...)` must not
+    persist the callback body as target_name (varchar(512) overflow).
+    """
+    parts: list[str] = []
+    current = node
+    steps = 0
+    while current is not None and steps < 48:
+        steps += 1
+        ntype = current.type
+        if ntype in _WRAPPER_TYPES:
+            inner = current.child_by_field_name("function") or current.child_by_field_name(
+                "expression"
+            )
+            if inner is None and current.named_child_count:
+                inner = current.named_children[0]
+            current = inner
+            continue
+        if ntype in {"member_expression", "member_access_expression"}:
+            prop = current.child_by_field_name("property")
+            if prop:
+                prop_text = _node_text(source, prop).strip()
+                if prop_text and "\n" not in prop_text and len(prop_text) <= 128:
+                    parts.append(prop_text)
+            current = current.child_by_field_name("object")
+            continue
+        if ntype == "subscript_expression":
+            current = current.child_by_field_name("object")
+            continue
+        if ntype == "call_expression":
+            current = current.child_by_field_name("function")
+            continue
+        if ntype == "new_expression":
+            current = current.child_by_field_name("constructor")
+            continue
+        if ntype in {
+            "identifier",
+            "property_identifier",
+            "private_property_identifier",
+            "this",
+            "super",
+        }:
+            parts.append(_node_text(source, current).strip())
+            break
+        text = _node_text(source, current).strip()
+        if text and "\n" not in text and len(text) <= 64 and "(" not in text and "{" not in text:
+            parts.append(text)
+        break
+
+    parts.reverse()
+    name = ".".join(p.strip(".").strip() for p in parts if p and p.strip("."))
+    name = "".join(name.split())
+    return name[:_MAX_CALL_NAME]
+
+
 def _extract_calls(node, source_name: str, result: ParseResult, source: bytes) -> None:
     stack = list(node.children)
     while stack:
         current = stack.pop()
         if current.type == "call_expression":
             fn = current.child_by_field_name("function")
-            if fn:
-                target = _node_text(source, fn)
+            target = _compact_js_callee(source, fn) if fn else ""
+            if target:
                 result.dependencies.append(
                     ParsedDependency(source_name=source_name, target_name=target, type="CALLS")
                 )

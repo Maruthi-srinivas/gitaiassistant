@@ -7,7 +7,8 @@ class Settings(BaseSettings):
 
     llm_api_key: str = ""
     llm_base_url: str = "https://openrouter.ai/api/v1"
-    llm_model: str = "openai/gpt-4o-mini"
+    llm_model: str = "openrouter/free"
+    llm_max_tokens: int = 1024
     embedding_model: str = "openai/text-embedding-3-small"
     database_url: str = "postgresql+psycopg://postgres:postgres@postgres:5432/app_db"
     redis_url: str = "redis://redis:6379/0"

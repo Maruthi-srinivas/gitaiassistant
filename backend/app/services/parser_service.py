@@ -11,6 +11,15 @@ from app.parsers.base import ParseResult
 
 logger = logging.getLogger(__name__)
 
+# Matches Symbol.name / Dependency.source_name / Dependency.target_name varchar(512)
+_NAME_MAX = 512
+
+
+def clip_name(value: str | None, max_len: int = _NAME_MAX) -> str:
+    """Collapse whitespace and fit Postgres varchar(512) identifier columns."""
+    text = " ".join((value or "").split())
+    return text[:max_len]
+
 
 def parse_file_content(language: str, path: str, content: str) -> ParseResult:
     try:
@@ -43,10 +52,13 @@ def persist_parse_results(
 ) -> dict[str, uuid.UUID]:
     name_to_id: dict[str, uuid.UUID] = {}
     for sym in parsed.symbols:
-        parent_id = name_to_id.get(sym.parent_name) if sym.parent_name else None
+        name = clip_name(sym.name)
+        if not name:
+            continue
+        parent_id = name_to_id.get(clip_name(sym.parent_name)) if sym.parent_name else None
         row = Symbol(
             file_id=file_rec.id,
-            name=sym.name,
+            name=name,
             type=sym.type,
             start_line=sym.start_line,
             end_line=sym.end_line,
@@ -55,18 +67,21 @@ def persist_parse_results(
         )
         db.add(row)
         db.flush()
-        name_to_id[sym.name] = row.id
-        short = sym.name.split(".")[-1]
-        name_to_id.setdefault(short, row.id)
+        name_to_id[name] = row.id
+        name_to_id.setdefault(name.split(".")[-1], row.id)
 
     for dep in parsed.dependencies:
+        source_name = clip_name(dep.source_name)
+        target_name = clip_name(dep.target_name)
+        if not source_name or not target_name:
+            continue
         db.add(
             Dependency(
                 repository_id=repository_id,
-                source_symbol_id=name_to_id.get(dep.source_name),
-                target_symbol_id=name_to_id.get(dep.target_name) or name_to_id.get(dep.target_name.split(".")[-1]),
-                source_name=dep.source_name,
-                target_name=dep.target_name,
+                source_symbol_id=name_to_id.get(source_name),
+                target_symbol_id=name_to_id.get(target_name) or name_to_id.get(target_name.split(".")[-1]),
+                source_name=source_name,
+                target_name=target_name,
                 type=dep.type,
                 file_id=file_rec.id,
             )

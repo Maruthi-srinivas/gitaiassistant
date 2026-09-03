@@ -39,5 +39,6 @@ def chat_completion(messages: list[dict], temperature: float = 0.2) -> str:
         model=settings.llm_model,
         messages=messages,
         temperature=temperature,
+        max_tokens=settings.llm_max_tokens,
     )
     return resp.choices[0].message.content or ""
