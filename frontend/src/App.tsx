@@ -340,8 +340,10 @@ export default function App() {
             }}
             userEmail={user.email}
             onLogout={() => {
-              setToken(null);
-              setUser(null);
+              api.logout().catch(() => undefined).finally(() => {
+                setToken(null);
+                setUser(null);
+              });
             }}
           />
         }

@@ -5,7 +5,7 @@ import logging
 import time
 import uuid
 
-from app.config import get_settings
+from app.config import get_settings, validate_runtime_security
 from app.database import SessionLocal, init_db
 from app.models import IndexingJob, JobStatus
 from app.redis_client import get_redis
@@ -38,6 +38,7 @@ def _requeue_or_dlq(r, data: dict, processing_key: str, queue_key: str, dlq_key:
 
 def main() -> None:
     settings = get_settings()
+    validate_runtime_security(settings)
     init_db()
     r = get_redis()
     queue_key, processing_key, dlq_key = _queue_keys(settings)

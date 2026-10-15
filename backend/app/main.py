@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
-from app.config import get_settings
+from app.config import get_settings, validate_runtime_security
 from app.database import init_db
 from app.middleware import RequestIdMiddleware
 
@@ -25,4 +25,5 @@ app.include_router(router)
 
 @app.on_event("startup")
 def on_startup() -> None:
+    validate_runtime_security(get_settings())
     init_db()

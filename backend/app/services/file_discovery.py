@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 from git import Repo
 
 from app.config import get_settings
+from app.crypto import decrypt_secret, redact_secrets
 from app.services.github_service import ParsedRepoUrl
 
 logger = logging.getLogger(__name__)
@@ -95,11 +97,28 @@ def repo_local_path(repo_id: str) -> Path:
 
 
 def _clone_url(parsed: ParsedRepoUrl, token: str | None = None) -> str:
-    settings = get_settings()
-    auth = token or settings.github_token
-    if auth:
-        return f"https://{auth}@github.com/{parsed.owner}/{parsed.name}.git"
     return parsed.clone_url
+
+
+def _git_auth_config(token: str | None = None) -> list[str]:
+    settings = get_settings()
+    raw = decrypt_secret(token) if token else settings.github_token
+    auth = (raw or "").strip()
+    if not auth:
+        return []
+    b64_token = base64.b64encode(f"x-access-token:{auth}".encode("utf-8")).decode("ascii")
+    return [f"http.https://github.com/.extraheader=Authorization: Basic {b64_token}"]
+
+
+def _sanitize_remote_url(repo: Repo, clean_url: str | None = None) -> None:
+    try:
+        origin = repo.remotes.origin
+        current_url = next(origin.urls, "")
+        sanitized = clean_url or redact_secrets(current_url).replace("***@", "")
+        if "@" in current_url and sanitized:
+            origin.set_url(sanitized)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def clone_repository(
@@ -109,27 +128,44 @@ def clone_repository(
         shutil.rmtree(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     settings = get_settings()
-    url = _clone_url(parsed, token=token)
+    url = _clone_url(parsed)
+    auth_cfg = _git_auth_config(token)
     depth = max(1, int(settings.git_clone_depth or 200))
     logger.info("Cloning %s into %s (depth=%s, branch=%s)", parsed.html_url, dest, depth, branch)
     kwargs: dict = {"depth": depth, "no_single_branch": True}
     if branch:
         kwargs["branch"] = branch
-    repo = Repo.clone_from(url, dest, **kwargs)
+    if auth_cfg:
+        kwargs["c"] = auth_cfg
+    try:
+        repo = Repo.clone_from(url, dest, **kwargs)
+    except Exception as exc:
+        clean_msg = redact_secrets(str(exc), token, settings.github_token)
+        raise RuntimeError(f"Git clone failed: {clean_msg}") from None
+    _sanitize_remote_url(repo, parsed.clone_url)
     if branch:
-        checkout_branch(dest, branch)
+        checkout_branch(dest, branch, token=token)
     return repo.head.commit.hexsha
 
 
-def checkout_branch(dest: Path, branch: str) -> str:
+def checkout_branch(dest: Path, branch: str, token: str | None = None) -> str:
     repo = Repo(dest)
+    settings = get_settings()
+    auth_cfg = _git_auth_config(token)
+    c_args: list[str] = []
+    for cfg in auth_cfg:
+        c_args.extend(["-c", cfg])
     try:
-        repo.git.fetch("origin", branch, depth=get_settings().git_clone_depth)
+        repo.git.execute(["git", *c_args, "fetch", "origin", branch, f"--depth={settings.git_clone_depth}"])
     except Exception:  # noqa: BLE001
         try:
-            repo.git.fetch("origin", branch)
+            repo.git.execute(["git", *c_args, "fetch", "origin", branch])
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not fetch branch %s: %s", branch, exc)
+            logger.warning(
+                "Could not fetch branch %s: %s",
+                branch,
+                redact_secrets(str(exc), token, settings.github_token),
+            )
     try:
         repo.git.checkout("-B", branch, f"origin/{branch}")
     except Exception:
@@ -154,19 +190,24 @@ def list_remote_branches(dest: Path) -> list[dict]:
     return sorted(branches, key=lambda b: b["name"])
 
 
-def pull_or_fetch(dest: Path, branch: str | None = None) -> tuple[str, str]:
+def pull_or_fetch(dest: Path, branch: str | None = None, token: str | None = None) -> tuple[str, str]:
     """Return (old_commit, new_commit). Raises RuntimeError with a clear message on failure."""
+    settings = get_settings()
+    auth_cfg = _git_auth_config(token)
+    c_args: list[str] = []
+    for cfg in auth_cfg:
+        c_args.extend(["-c", cfg])
     try:
         repo = Repo(dest)
+        _sanitize_remote_url(repo)
         old = repo.head.commit.hexsha
-        origin = repo.remotes.origin
         try:
-            origin.fetch(prune=True)
+            repo.git.execute(["git", *c_args, "fetch", "--prune", "origin"])
         except Exception:
             try:
-                repo.git.fetch("--unshallow", "origin")
+                repo.git.execute(["git", *c_args, "fetch", "--unshallow", "origin"])
             except Exception:
-                origin.fetch(prune=True)
+                repo.git.execute(["git", *c_args, "fetch", "--prune", "origin"])
         if branch:
             try:
                 repo.git.checkout("-B", branch, f"origin/{branch}")
@@ -184,9 +225,10 @@ def pull_or_fetch(dest: Path, branch: str | None = None) -> tuple[str, str]:
         new = repo.head.commit.hexsha
         return old, new
     except Exception as exc:  # noqa: BLE001
+        clean_err = redact_secrets(str(exc), token, settings.github_token)
         raise RuntimeError(
-            f"Incremental git fetch failed ({exc}). Use Analyze for a full re-index."
-        ) from exc
+            f"Incremental git fetch failed ({clean_err}). Use Analyze for a full re-index."
+        ) from None
 
 
 def changed_files(dest: Path, old_commit: str, new_commit: str) -> list[str]:

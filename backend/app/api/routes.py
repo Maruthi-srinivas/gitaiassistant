@@ -5,10 +5,19 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.auth import (
+    create_access_token,
+    get_current_user,
+    hash_password,
+    revoke_access_token,
+    validate_password_strength,
+    verify_password,
+)
 from app.config import get_settings
+from app.crypto import encrypt_secret
 from app.database import get_db
 from app.models import Dependency, FileRecord, RepositoryBranch, Symbol, User
 from app.schemas import (
@@ -68,8 +77,12 @@ def health():
 @router.post("/auth/register", response_model=TokenResponse, status_code=201)
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
     email = body.email.strip().lower()
-    if not email or len(body.password) < 8:
-        raise HTTPException(status_code=400, detail="Email and password (8+ chars) required")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    try:
+        validate_password_strength(body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=409, detail="Email already registered")
     user = User(email=email, password_hash=hash_password(body.password))
@@ -88,6 +101,16 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     return TokenResponse(access_token=create_access_token(user.id, user.email))
 
 
+@router.post("/auth/logout")
+def logout(
+    creds: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+    _user: User = Depends(get_current_user),
+):
+    if creds and creds.credentials:
+        revoke_access_token(creds.credentials)
+    return {"status": "logged_out"}
+
+
 @router.get("/auth/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
     return UserOut(id=user.id, email=user.email, has_github_token=bool(user.github_token))
@@ -96,7 +119,8 @@ def me(user: User = Depends(get_current_user)):
 @router.patch("/auth/me", response_model=UserOut)
 def update_me(body: UserUpdate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     if body.github_token is not None:
-        user.github_token = body.github_token.strip() or None
+        raw_token = body.github_token.strip()
+        user.github_token = encrypt_secret(raw_token) if raw_token else None
         db.commit()
         db.refresh(user)
     return UserOut(id=user.id, email=user.email, has_github_token=bool(user.github_token))

@@ -155,6 +155,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
+  logout: () =>
+    request<{ status: string }>("/api/auth/logout", {
+      method: "POST",
+    }),
   me: () => request<User>("/api/auth/me"),
   updateMe: (github_token: string) =>
     request<User>("/api/auth/me", {

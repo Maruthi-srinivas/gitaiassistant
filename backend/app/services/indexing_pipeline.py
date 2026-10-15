@@ -6,6 +6,8 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
+from app.crypto import decrypt_secret, redact_secrets
 from app.models import (
     CodeChunk,
     Dependency,
@@ -86,7 +88,7 @@ def run_indexing_job(
         parsed = parse_github_url(repo.github_url)
         dest = repo_local_path(str(repo.id))
         owner = db.get(User, repo.owner_user_id) if repo.owner_user_id else None
-        clone_token = owner.github_token if owner and owner.github_token else None
+        clone_token = decrypt_secret(owner.github_token) if owner and owner.github_token else None
         old_commit = repo.commit_hash
         target_branch = branch or job.branch or repo.default_branch
         if branch:
@@ -98,14 +100,14 @@ def run_indexing_job(
         clone_start = time.perf_counter()
         if dest.exists() and (dest / ".git").exists() and incremental and old_commit:
             try:
-                old_c, new_c = pull_or_fetch(dest, branch=target_branch)
+                old_c, new_c = pull_or_fetch(dest, branch=target_branch, token=clone_token)
                 changed = changed_files(dest, old_c, new_c)
                 commit_hash = new_c
             except Exception as fetch_exc:  # noqa: BLE001
                 logger.warning(
                     "Incremental fetch failed for repo %s (%s); falling back to full clone",
                     repo.id,
-                    fetch_exc,
+                    redact_secrets(str(fetch_exc), clone_token, get_settings().github_token),
                 )
                 commit_hash = clone_repository(parsed, dest, branch=target_branch, token=clone_token)
                 changed = None
@@ -125,7 +127,7 @@ def run_indexing_job(
                 try:
                     from app.services.file_discovery import checkout_branch
 
-                    commit_hash = checkout_branch(dest, target_branch)
+                    commit_hash = checkout_branch(dest, target_branch, token=clone_token)
                     changed = None
                     incremental = False
                 except Exception:  # noqa: BLE001
@@ -284,12 +286,15 @@ def run_indexing_job(
             metrics,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Indexing failed for job %s", job_id)
+        settings = get_settings()
+        owner_token = locals().get("clone_token")
+        safe_exc = redact_secrets(str(exc), owner_token, settings.github_token)
+        logger.error("Indexing failed for job %s: %s", job_id, safe_exc)
         db.rollback()
         job = db.get(IndexingJob, job_id)
         repo = db.get(Repository, job.repository_id) if job else None
         if job and repo:
-            msg = str(exc)
+            msg = safe_exc
             if "fetch" in msg.lower() or "incremental" in msg.lower():
                 msg = (
                     f"{msg} Click Analyze to run a full re-index of this repository."

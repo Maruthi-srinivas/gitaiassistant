@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.crypto import decrypt_secret
 from app.models import IndexingJob, JobStatus, RepoStatus, Repository, User
 from app.redis_client import get_redis
 from app.request_context import get_request_id
@@ -20,7 +21,8 @@ logger = logging.getLogger(__name__)
 def create_repository(db: Session, url: str, owner: User | None = None) -> Repository:
     parsed = parse_github_url(url)
     settings = get_settings()
-    token = (owner.github_token if owner and owner.github_token else None) or settings.github_token
+    user_token = decrypt_secret(owner.github_token) if owner and owner.github_token else None
+    token = user_token or settings.github_token
     meta = fetch_repo_metadata(parsed.owner, parsed.name, token=token)
     if meta.get("private") and not token:
         raise ValueError("Private repositories require GITHUB_TOKEN")

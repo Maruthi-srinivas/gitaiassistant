@@ -26,8 +26,21 @@ class Settings(BaseSettings):
     retrieve_candidates: int = 40
     context_chunks: int = 10
     jwt_secret: str = "dev-jwt-secret-change-me"
-    jwt_expire_minutes: int = 10080
+    jwt_expire_minutes: int = 1440
+    encryption_key: str = ""
+    environment: str = "development"
     index_max_attempts: int = 3
+
+
+def validate_runtime_security(settings: Settings) -> None:
+    if settings.environment.strip().lower() != "production":
+        return
+    if settings.jwt_secret == "dev-jwt-secret-change-me" or len(settings.jwt_secret.strip()) < 32:
+        raise RuntimeError(
+            "Production environment requires a strong JWT_SECRET (at least 32 characters)."
+        )
+    if not settings.encryption_key.strip():
+        raise RuntimeError("Production environment requires an explicit ENCRYPTION_KEY.")
 
 
 @lru_cache
