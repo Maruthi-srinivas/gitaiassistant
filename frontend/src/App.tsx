@@ -36,6 +36,7 @@ export default function App() {
   const [status, setStatus] = useState<IndexStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tree, setTree] = useState<KnowledgeNode[]>([]);
   const [graph, setGraph] = useState<GraphData | null>(null);
@@ -123,27 +124,42 @@ export default function App() {
   useEffect(() => {
     if (!repo) return;
     if (!status || status.status === "COMPLETED" || status.status === "FAILED") return;
-    const t = setInterval(async () => {
-      try {
-        const s = await api.indexStatus(repo.id);
-        setStatus(s);
-        if (s.status === "COMPLETED") {
-          await loadArtifacts(repo.id);
-          await refreshBranches(repo.id);
-          setError(null);
-          logActivity("Repository indexed successfully");
-        } else if (s.status === "FAILED") {
-          setError(
-            s.error ||
-              "Indexing failed. Click Analyze to run a full re-index of this repository."
-          );
-          logActivity("Indexing failed", false);
+    const controller = new AbortController();
+    let cancelled = false;
+    api
+      .streamIndex(
+        repo.id,
+        (s) => {
+          if (cancelled) return;
+          setStatus(s);
+          if (s.status === "COMPLETED") {
+            void loadArtifacts(repo.id);
+            void refreshBranches(repo.id);
+            setError(null);
+            logActivity("Repository indexed successfully");
+          } else if (s.status === "FAILED") {
+            setError(
+              s.error ||
+                "Indexing failed. Click Analyze to run a full re-index of this repository."
+            );
+            logActivity("Indexing failed", false);
+          }
+        },
+        controller.signal,
+      )
+      .catch(async (e) => {
+        if (cancelled || controller.signal.aborted) return;
+        try {
+          const s = await api.indexStatus(repo.id);
+          if (!cancelled) setStatus(s);
+        } catch {
+          if (!cancelled) setError(formatUserError(e, "status"));
         }
-      } catch (e) {
-        setError(formatUserError(e, "status"));
-      }
-    }, 2000);
-    return () => clearInterval(t);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
   }, [repo, status?.status]);
 
   useEffect(() => {
@@ -276,21 +292,54 @@ export default function App() {
     if (!repo || !chatInput.trim() || !completed || chatBusy) return;
     const q = chatInput.trim();
     setChatInput("");
-    setMessages((m) => [...m, { role: "user", content: q }]);
+    setMessages((m) => [...m, { role: "user", content: q }, { role: "assistant", content: "" }]);
     setChatBusy(true);
+    setLiveStatus("Thinking...");
     logActivity(`Query: ${q.length > 40 ? `${q.slice(0, 40)}…` : q}`);
     try {
-      const res = await api.chat(repo.id, q, conversationId);
-      setConversationId(res.conversation_id);
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: res.answer, sources: res.sources },
-      ]);
-      logActivity("Response generated");
+      await api.streamChat(repo.id, q, {
+        onStatus: (statusText) => setLiveStatus(statusText),
+        onToken: (token) => {
+          setMessages((m) => {
+            const next = [...m];
+            const last = next[next.length - 1];
+            if (last?.role === "assistant") {
+              next[next.length - 1] = { ...last, content: last.content + token };
+            }
+            return next;
+          });
+        },
+        onDone: (res) => {
+          setConversationId(res.conversation_id);
+          setMessages((m) => {
+            const next = [...m];
+            const last = next[next.length - 1];
+            if (last?.role === "assistant") {
+              next[next.length - 1] = {
+                role: "assistant",
+                content: res.answer,
+                sources: res.sources,
+              };
+            }
+            return next;
+          });
+          logActivity("Response generated");
+        },
+      }, conversationId);
     } catch (e) {
-      setMessages((m) => [...m, { role: "assistant", content: formatUserError(e, "chat") }]);
+      setMessages((m) => {
+        const next = [...m];
+        const last = next[next.length - 1];
+        const text = formatUserError(e, "chat");
+        if (last?.role === "assistant" && !last.content) {
+          next[next.length - 1] = { role: "assistant", content: text };
+          return next;
+        }
+        return [...next, { role: "assistant", content: text }];
+      });
       logActivity("Chat error", false);
     } finally {
+      setLiveStatus(null);
       setChatBusy(false);
     }
   }
@@ -391,6 +440,7 @@ export default function App() {
             }}
             fileCount={files.length}
             chatBusy={chatBusy}
+            liveStatus={liveStatus}
           />
         }
         right={

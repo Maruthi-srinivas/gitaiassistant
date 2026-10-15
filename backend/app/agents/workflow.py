@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import operator
+import queue
 import re
+import threading
 import time
 import uuid
+from collections.abc import Iterator
+from contextvars import ContextVar
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -23,11 +29,51 @@ from app.agents.query_utils import (
 )
 from app.config import get_settings
 from app.models import Conversation, Message, Repository
-from app.rag.embeddings import chat_completion
+from app.rag.embeddings import chat_completion, chat_completion_stream
 from app.rag.fusion import reciprocal_rank_fusion
 from app.rag.prompts import build_answer_messages, build_source_check_messages
 
 logger = logging.getLogger(__name__)
+
+_token_queue: ContextVar[queue.Queue | None] = ContextVar("token_queue", default=None)
+
+NODE_STATUS = {
+    "classify": "Classifying the question...",
+    "retrieve": "Searching symbols...",
+    "compose_answer": "Composing the answer...",
+    "source_check": "Verifying citations...",
+}
+
+
+def set_token_queue(token_queue: queue.Queue | None):
+    return _token_queue.set(token_queue)
+
+
+def reset_token_queue(token) -> None:
+    _token_queue.reset(token)
+
+
+def status_for_node(name: str | None) -> str | None:
+    if not name:
+        return None
+    if name in NODE_STATUS:
+        return NODE_STATUS[name]
+    for key, label in NODE_STATUS.items():
+        if name.endswith(key):
+            return label
+    return None
+
+
+def format_sse(event: str, data: str) -> str:
+    lines = str(data).split("\n")
+    body = "\n".join(f"data: {line}" for line in lines)
+    return f"event: {event}\n{body}\n\n"
+
+
+def frames_for_tokens(deltas: list[str], done: dict) -> list[str]:
+    frames = [format_sse("token", delta) for delta in deltas]
+    frames.append(format_sse("done", json.dumps(done)))
+    return frames
 
 
 class AgentState(TypedDict):
@@ -171,7 +217,15 @@ def node_answer(state: AgentState) -> dict:
     messages = build_answer_messages(state["question"], context_chunks, history=history)
     t0 = time.perf_counter()
     try:
-        answer = chat_completion(messages, temperature=0.0)
+        token_queue = _token_queue.get()
+        if token_queue is not None:
+            parts: list[str] = []
+            for delta in chat_completion_stream(messages, temperature=0.0):
+                parts.append(delta)
+                token_queue.put(delta)
+            answer = "".join(parts)
+        else:
+            answer = chat_completion(messages, temperature=0.0)
     except Exception as exc:  # noqa: BLE001
         logger.exception("LLM call failed")
         top = context_chunks[0]
@@ -267,6 +321,152 @@ def get_graph_app():
     return _GRAPH
 
 
+def _agent_input(repository_id: uuid.UUID, question: str, history: str) -> dict:
+    return {
+        "repository_id": str(repository_id),
+        "question": question,
+        "history": history,
+        "kinds": [],
+        "chunks": [],
+        "notes": [],
+        "answer": "",
+        "sources": [],
+        "citation_ok": False,
+    }
+
+
+def _open_conversation(
+    db: Session,
+    repository_id: uuid.UUID,
+    message: str,
+    conversation_id: uuid.UUID | None,
+    user_id: uuid.UUID | None,
+) -> tuple[Conversation, str]:
+    conversation = None
+    if conversation_id:
+        conversation = db.get(Conversation, conversation_id)
+        if (
+            not conversation
+            or conversation.repository_id != repository_id
+            or (user_id and conversation.user_id and conversation.user_id != user_id)
+        ):
+            conversation = None
+    if not conversation:
+        conversation = Conversation(repository_id=repository_id, user_id=user_id)
+        db.add(conversation)
+        db.flush()
+    prior = (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation.id)
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+    history = format_history(
+        [{"role": m.role, "content": m.content} for m in prior],
+        max_turns=6,
+    )
+    db.add(Message(conversation_id=conversation.id, role="user", content=message))
+    db.flush()
+    return conversation, history
+
+
+def iter_chat_events(
+    db: Session,
+    repository_id: uuid.UUID,
+    message: str,
+    conversation_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
+) -> Iterator[tuple[str, object]]:
+    """Yield status, token, and done events while the agent graph runs."""
+    from app.services.usage_service import reset_usage_user, set_usage_user
+
+    conversation, history = _open_conversation(db, repository_id, message, conversation_id, user_id)
+    token_q: queue.Queue = queue.Queue()
+    out: queue.Queue = queue.Queue()
+    final: dict = {}
+
+    def worker() -> None:
+        usage_ctx = set_usage_user(user_id)
+        token_ctx = set_token_queue(token_q)
+        try:
+            graph = get_graph_app()
+
+            async def run() -> None:
+                async for ev in graph.astream_events(
+                    _agent_input(repository_id, message, history),
+                    version="v2",
+                ):
+                    kind = ev.get("event")
+                    if kind == "on_chain_start":
+                        label = status_for_node(ev.get("name"))
+                        if label:
+                            out.put(("status", label))
+                    elif kind == "on_chain_end":
+                        output = (ev.get("data") or {}).get("output")
+                        if isinstance(output, dict) and output.get("answer"):
+                            final["answer"] = output.get("answer")
+                            if output.get("sources"):
+                                final["sources"] = output.get("sources")
+
+            asyncio.run(run())
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Streaming agent failed")
+            out.put(("error", str(exc)))
+        finally:
+            reset_token_queue(token_ctx)
+            reset_usage_user(usage_ctx)
+            out.put(("finished", None))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    while True:
+        while True:
+            try:
+                delta = token_q.get_nowait()
+            except queue.Empty:
+                break
+            yield ("token", delta)
+        try:
+            kind, payload = out.get(timeout=0.05)
+        except queue.Empty:
+            if not thread.is_alive() and token_q.empty() and out.empty():
+                break
+            continue
+        if kind == "status":
+            yield ("status", payload)
+        elif kind == "error":
+            raise RuntimeError(str(payload))
+        elif kind == "finished":
+            while True:
+                try:
+                    delta = token_q.get_nowait()
+                except queue.Empty:
+                    break
+                yield ("token", delta)
+            break
+    thread.join(timeout=2)
+    answer = str(final.get("answer") or "")
+    sources = final.get("sources") or []
+    db.add(
+        Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=answer,
+            sources=sources,
+        )
+    )
+    db.commit()
+    db.refresh(conversation)
+    yield (
+        "done",
+        {
+            "conversation_id": str(conversation.id),
+            "answer": answer,
+            "sources": sources,
+        },
+    )
+
+
 def run_agent(
     db: Session,
     repository_id: uuid.UUID,
@@ -302,33 +502,7 @@ def chat(
     conversation_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
 ) -> tuple[Conversation, str, list[dict]]:
-    conversation = None
-    if conversation_id:
-        conversation = db.get(Conversation, conversation_id)
-        if (
-            not conversation
-            or conversation.repository_id != repository_id
-            or (user_id and conversation.user_id and conversation.user_id != user_id)
-        ):
-            conversation = None
-    if not conversation:
-        conversation = Conversation(repository_id=repository_id, user_id=user_id)
-        db.add(conversation)
-        db.flush()
-
-    # Load prior turns before adding the new user message
-    prior = (
-        db.query(Message)
-        .filter(Message.conversation_id == conversation.id)
-        .order_by(Message.created_at.asc())
-        .all()
-    )
-    history = format_history(
-        [{"role": m.role, "content": m.content} for m in prior],
-        max_turns=6,
-    )
-
-    db.add(Message(conversation_id=conversation.id, role="user", content=message))
+    conversation, history = _open_conversation(db, repository_id, message, conversation_id, user_id)
     answer, sources = run_agent(db, repository_id, message, history=history)
     db.add(
         Message(

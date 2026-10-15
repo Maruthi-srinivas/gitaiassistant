@@ -70,3 +70,31 @@ def chat_completion(messages: list[dict], temperature: float = 0.2) -> str:
             int(getattr(usage, "completion_tokens", 0) or 0),
         )
     return resp.choices[0].message.content or ""
+
+
+def chat_completion_stream(messages: list[dict], temperature: float = 0.2):
+    settings = get_settings()
+    client = get_openai_client()
+    stream = client.chat.completions.create(
+        model=settings.llm_model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=settings.llm_max_tokens,
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+    prompt_tokens = 0
+    completion_tokens = 0
+    for chunk in stream:
+        usage = getattr(chunk, "usage", None)
+        if usage:
+            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        delta = getattr(choices[0].delta, "content", None) or ""
+        if delta:
+            yield delta
+    if prompt_tokens or completion_tokens:
+        _persist_usage("chat", settings.llm_model, prompt_tokens, completion_tokens)

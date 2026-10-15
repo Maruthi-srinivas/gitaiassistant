@@ -20,6 +20,7 @@ type Props = {
   onConnectRepo: () => void;
   fileCount: number;
   chatBusy: boolean;
+  liveStatus?: string | null;
 };
 
 export default function ChatPanel({
@@ -36,6 +37,7 @@ export default function ChatPanel({
   onConnectRepo,
   fileCount,
   chatBusy,
+  liveStatus,
 }: Props) {
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const sourceCount = lastAssistant?.sources?.length ?? 0;
@@ -141,9 +143,15 @@ export default function ChatPanel({
             <div className="message-row assistant">
               <div className="message-avatar assistant">AI</div>
               <div className="bubble assistant typing">
-                <span className="typing-dot" />
-                <span className="typing-dot" />
-                <span className="typing-dot" />
+                {liveStatus ? (
+                  <span className="live-status">{liveStatus}</span>
+                ) : (
+                  <>
+                    <span className="typing-dot" />
+                    <span className="typing-dot" />
+                    <span className="typing-dot" />
+                  </>
+                )}
               </div>
             </div>
           )}

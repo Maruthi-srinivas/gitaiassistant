@@ -49,6 +49,41 @@ export type ChatResponse = {
   sources: { file: string; start_line: number; end_line: number; snippet?: string }[];
 };
 
+type SseHandlers = {
+  onStatus?: (status: string) => void;
+  onToken?: (token: string) => void;
+  onDone?: (payload: ChatResponse) => void;
+};
+
+async function readSse(
+  res: Response,
+  onFrame: (event: string, data: string) => void,
+): Promise<void> {
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => "");
+    throw new Error(parseErrorBody(text) || res.statusText || `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() || "";
+    for (const frame of frames) {
+      let event = "message";
+      const dataLines: string[] = [];
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+      }
+      if (dataLines.length) onFrame(event, dataLines.join("\n"));
+    }
+  }
+}
+
 function parseErrorBody(text: string): string {
   if (!text) return "";
   try {
@@ -185,4 +220,49 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message, conversation_id }),
     }),
+  streamIndex: async (
+    id: string,
+    onEvent: (status: IndexStatus) => void,
+    signal?: AbortSignal,
+  ) => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/api/v1/repositories/${id}/index-stream`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal,
+    });
+    if (res.status === 401) {
+      setToken(null);
+      throw new Error("Please sign in again.");
+    }
+    await readSse(res, (_event, data) => {
+      onEvent(JSON.parse(data) as IndexStatus);
+    });
+  },
+  streamChat: async (
+    id: string,
+    message: string,
+    handlers: SseHandlers,
+    conversation_id?: string,
+    signal?: AbortSignal,
+  ) => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/api/v1/repositories/${id}/chat/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ message, conversation_id }),
+      signal,
+    });
+    if (res.status === 401) {
+      setToken(null);
+      throw new Error("Please sign in again.");
+    }
+    await readSse(res, (event, data) => {
+      if (event === "status") handlers.onStatus?.(data);
+      else if (event === "token") handlers.onToken?.(data);
+      else if (event === "done") handlers.onDone?.(JSON.parse(data) as ChatResponse);
+    });
+  },
 };

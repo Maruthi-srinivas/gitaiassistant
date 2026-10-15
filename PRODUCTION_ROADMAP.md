@@ -66,19 +66,15 @@ Before tracking pending work, the following capabilities are **already implement
 
 ---
 
-## Stage 4: Real-Time UX & Streaming (P1 — User Experience)
+## Stage 4: Real-Time UX & Streaming (P1 — Completed)
 
-### 4.1 Server-Sent Events (SSE) for Indexing Progress
-- **Current state:** The React frontend polls `GET /api/repositories/{id}/index-status` every 2 seconds (`frontend/src/App.tsx`).
-- **Pending work:**
-  - Have the worker publish progress transitions (`CLONING` → `PARSING` → `EMBEDDING` → `COMPLETED`) to Redis Pub/Sub.
-  - Expose `GET /api/repositories/{id}/index-stream` (SSE) in FastAPI and subscribe via `EventSource` in the UI.
+### 4.1 Server-Sent Events (SSE) for Indexing Progress (Completed)
+- **Implemented:** `_set_status` publishes `{repository_id, status, progress, error}` on Redis channel `index_progress:{repository_id}`.
+- **Implemented:** `GET /api/v1/repositories/{id}/index-stream` streams those updates. The UI consumes the stream with `fetch` and the bearer token, and falls back to one status read if the stream drops.
 
-### 4.2 Streaming Chat Responses (Token-by-Token + Agent Step Events)
-- **Current state:** `POST /api/repositories/{id}/chat` blocks until the entire LangGraph workflow (`plan` → `retrieve` → `answer` → `verify`) finishes.
-- **Pending work:**
-  - Add a streaming chat endpoint using LangGraph `.astream_events()` over SSE.
-  - Stream intermediate agent status (`"Searching symbols..."`, `"Reranking 18 chunks..."`, `"Verifying citations..."`) followed by token-by-token answer generation.
+### 4.2 Streaming Chat Responses (Completed)
+- **Implemented:** `POST /api/v1/repositories/{id}/chat/stream` runs the LangGraph agent with `astream_events` and streams step status plus answer tokens. The JSON `POST .../chat` route remains for non-streaming clients.
+- **Implemented:** The chat panel shows the live step status and appends tokens as they arrive.
 
 ---
 
@@ -148,7 +144,7 @@ Before tracking pending work, the following capabilities are **already implement
 | **P0 (Done)** | **1. Security & Auth** | Encrypted `github_token` at rest, JWT `jti` Redis revocation, transient Git HTTP auth headers & log redaction |
 | **P0 (Done)** | **2. Database & Storage** | Alembic migrations, pgvector HNSW index, worktree file loader (`files.content=NULL`), commit-scoped cache + invalidation |
 | **P1 (Done)** | **3. API Governance** | Auth/chat/index rate limits, concurrent index cap, usage logs and token budgets, `/api/v1` |
-| **P1** | **4. Real-Time UX** | SSE for indexing progress, token-by-token streaming for LangGraph chat |
+| **P1 (Done)** | **4. Real-Time UX** | Index progress SSE, streamed agent status and answer tokens |
 | **P2** | **5. Worker Scale** | Worker heartbeats / ARQ or Celery, OpenRouter retry backoff, repo size limits |
 | **P2** | **6. Infra & Observability** | Nginx frontend container, multi-worker Uvicorn, OpenTelemetry/Prometheus, Postgres+Redis in CI |
 | **P3** | **7. Cleanup & Docs** | Remove deprecated `worker/` & `parsers/` stubs, sync `README.md` and architecture handbook |

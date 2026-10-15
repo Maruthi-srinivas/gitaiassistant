@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -35,10 +36,38 @@ from app.services.github_service import parse_github_url
 from app.services.graph_service import rebuild_graph
 from app.services.knowledge_service import enrich_knowledge_descriptions, rebuild_knowledge_tree
 from app.services.parser_service import parse_file_content, persist_parse_results
+from app.redis_client import get_redis
 from app.services.rag_service import chunk_repository, embed_chunks
 from app.services.usage_service import assert_token_budget, reset_usage_user, set_usage_user
 
 logger = logging.getLogger(__name__)
+
+
+def index_progress_channel(repository_id: uuid.UUID | str) -> str:
+    return f"index_progress:{repository_id}"
+
+
+def index_progress_payload(repo: Repository, job: IndexingJob | None) -> dict:
+    status = job.status.value if job else repo.status.value
+    return {
+        "repository_id": str(repo.id),
+        "status": status,
+        "progress": job.progress if job else 0.0,
+        "error": job.error if job and job.error is not None else repo.error,
+        "branch": job.branch if job else repo.default_branch,
+    }
+
+
+def publish_index_progress(repo: Repository, job: IndexingJob | None) -> None:
+    payload = index_progress_payload(repo, job)
+    try:
+        get_redis().publish(index_progress_channel(repo.id), json.dumps(payload))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to publish index progress for %s: %s", repo.id, exc)
+
+
+def format_index_sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
 
 
 def _set_status(
@@ -55,6 +84,7 @@ def _set_status(
     repo.status = RepoStatus(status.value)
     repo.error = error
     db.commit()
+    publish_index_progress(repo, job)
 
 
 def _delete_file_artifacts(db: Session, file_ids: list[uuid.UUID]) -> None:

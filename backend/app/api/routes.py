@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -19,7 +21,7 @@ from app.auth import (
 from app.config import get_settings
 from app.crypto import encrypt_secret
 from app.database import get_db
-from app.models import Dependency, FileRecord, RepositoryBranch, Symbol, User
+from app.models import Dependency, FileRecord, Repository, RepositoryBranch, Symbol, User
 from app.schemas import (
     BranchOut,
     ChatRequest,
@@ -46,6 +48,8 @@ from app.schemas import (
     UserUpdate,
 )
 from app.agents.workflow import chat as agent_chat
+from app.agents.workflow import format_sse, iter_chat_events
+from app.redis_client import get_redis
 from app.services.cache import cache_get, cache_set, chat_cache_key
 from app.services.file_discovery import load_file_content, repo_local_path
 from app.services.git_history_service import (
@@ -55,6 +59,11 @@ from app.services.git_history_service import (
     module_churn,
 )
 from app.services.graph_service import get_graph
+from app.services.indexing_pipeline import (
+    format_index_sse,
+    index_progress_channel,
+    index_progress_payload,
+)
 from app.services.knowledge_service import get_knowledge_tree
 from app.services.repository_service import (
     assert_index_capacity,
@@ -213,6 +222,44 @@ def index_status(
             if job
             else None
         ),
+    )
+
+
+def _iter_index_stream(repo: Repository, job):
+    payload = index_progress_payload(repo, job)
+    yield format_index_sse(payload)
+    if payload["status"] in {"COMPLETED", "FAILED"}:
+        return
+    pubsub = get_redis().pubsub()
+    pubsub.subscribe(index_progress_channel(repo.id))
+    try:
+        while True:
+            message = pubsub.get_message(timeout=1.0)
+            if not message or message.get("type") != "message":
+                continue
+            raw = message.get("data")
+            text = raw if isinstance(raw, str) else raw.decode("utf-8")
+            yield f"data: {text}\n\n"
+            try:
+                body = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if body.get("status") in {"COMPLETED", "FAILED"}:
+                break
+    finally:
+        pubsub.close()
+
+
+@router.get("/repositories/{repo_id}/index-stream")
+def index_stream(
+    repo_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    repo = get_repository(db, repo_id, user_id=user.id)
+    job = latest_job(db, repo_id)
+    return StreamingResponse(
+        _iter_index_stream(repo, job),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -423,3 +470,35 @@ def chat_repo(
     if body.conversation_id is None:
         cache_set(cache_key, response.model_dump(mode="json"))
     return response
+
+
+@router.post("/repositories/{repo_id}/chat/stream")
+def chat_stream(
+    repo_id: uuid.UUID,
+    body: ChatRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    settings = get_settings()
+    check_rate_limit(f"chat:{user.id}", settings.chat_rate_limit_per_minute)
+    get_repository(db, repo_id, user_id=user.id)
+    assert_token_budget(db, user)
+
+    def generate():
+        for kind, payload in iter_chat_events(
+            db,
+            repo_id,
+            body.message,
+            conversation_id=body.conversation_id,
+            user_id=user.id,
+        ):
+            if kind == "done":
+                yield format_sse("done", json.dumps(payload))
+            else:
+                yield format_sse(kind, str(payload))
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
