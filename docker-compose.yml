@@ -38,7 +38,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
     volumes:
-      - ./data:/data
+      - repodata:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,7 +60,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
     volumes:
-      - ./data:/data
+      - repodata:/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,3 +77,4 @@ services:
 
 volumes:
   pgdata:
+  repodata:

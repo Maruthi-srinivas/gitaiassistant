@@ -25,6 +25,7 @@ def test_private_repo_rejected_without_token(mock_meta):
 def test_private_repo_allowed_with_token(mock_meta, mock_settings):
     mock_meta.return_value = {"private": True, "default_branch": "main"}
     mock_settings.return_value.github_token = "ghp_test"
+    mock_settings.return_value.max_repo_size_kb = 512000
     db = MagicMock()
     create_repository(db, "https://github.com/acme/secret")
     db.add.assert_called_once()

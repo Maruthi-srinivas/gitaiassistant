@@ -26,6 +26,11 @@ def create_repository(db: Session, url: str, owner: User | None = None) -> Repos
     meta = fetch_repo_metadata(parsed.owner, parsed.name, token=token)
     if meta.get("private") and not token:
         raise ValueError("Private repositories require GITHUB_TOKEN")
+    size_kb = int(meta.get("size") or 0)
+    if size_kb > settings.max_repo_size_kb:
+        raise ValueError(
+            f"Repository is {size_kb} KB, which exceeds the {settings.max_repo_size_kb} KB limit"
+        )
     repo = Repository(
         github_url=parsed.html_url,
         owner=parsed.owner,

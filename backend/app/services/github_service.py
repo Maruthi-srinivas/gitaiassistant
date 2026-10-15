@@ -51,4 +51,5 @@ def fetch_repo_metadata(owner: str, name: str, token: str | None = None) -> dict
             "default_branch": data.get("default_branch") or "main",
             "private": bool(data.get("private")),
             "full_name": data.get("full_name"),
+            "size": int(data.get("size") or 0),
         }

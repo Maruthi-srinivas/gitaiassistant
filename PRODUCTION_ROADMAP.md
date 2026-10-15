@@ -78,24 +78,16 @@ Before tracking pending work, the following capabilities are **already implement
 
 ---
 
-## Stage 5: Worker Scalability & Indexing Pipeline Hardening (P2 — Scale)
+## Stage 5: Worker Scalability & Indexing Pipeline Hardening (P2 — Completed)
 
-### 5.1 Stale / Orphaned Job Recovery (Visibility Timeout)
-- **Current state:** `indexing_worker.py` moves items from `queue` to `queue:processing` and re-queues leftovers only when the single worker process restarts. If multiple workers run, a crashed worker leaves jobs stuck in `processing` until another restart.
-- **Pending work:**
-  - Track heartbeats per `job_id` in Redis with a TTL, or migrate the custom `BLPOP` loop to **ARQ / Celery / RQ** with built-in visibility timeouts and scheduled retries.
+### 5.1 Stale / Orphaned Job Recovery (Completed)
+- **Implemented:** Each in-flight job refreshes `index_heartbeat:{job_id}` in Redis. When `BLPOP` times out, the worker requeues processing-list jobs whose heartbeat is gone and leaves jobs that still have a heartbeat.
 
-### 5.2 Shared Storage for Multi-Node Workers
-- **Current state:** Backend and worker share a local Docker bind mount (`./data:/data`) for cloned git repositories.
-- **Pending work:**
-  - Decouple API servers from `/data` by having file-content and git-blame reads served from Postgres/S3, or mount a shared network filesystem (AWS EFS / NFS) only across worker nodes.
+### 5.2 Shared Storage for Multi-Node Workers (Completed)
+- **Implemented:** `backend` and `worker` mount the same Compose volume `repodata` at `/data`, so extra worker replicas and the API read the same clones.
 
-### 5.3 Parallel File Parsing & Batch Embedding Backpressure
-- **Current state:** Parsing runs sequentially in a single thread per job; large repositories can hit timeouts or rate limits during embedding generation.
-- **Pending work:**
-  - Parse files concurrently using `ProcessPoolExecutor` (bounded by CPU cores).
-  - Add exponential backoff + jitter on OpenRouter embedding/chat HTTP `429` / `5xx` responses in `backend/app/rag/embeddings.py`.
-  - Enforce repository size and file-count guardrails before cloning (check repo `size` from GitHub API metadata).
+### 5.3 Parallel File Parsing & Batch Embedding Backpressure (Completed)
+- **Implemented:** Non-markdown files are parsed with a `ProcessPoolExecutor`. Embedding and chat calls retry HTTP 429 and 5xx with exponential backoff and jitter. Repositories over `MAX_REPO_SIZE_KB` are rejected before they are saved, and indexing stops when the file count exceeds `MAX_INDEX_FILES`.
 
 ---
 
@@ -145,6 +137,6 @@ Before tracking pending work, the following capabilities are **already implement
 | **P0 (Done)** | **2. Database & Storage** | Alembic migrations, pgvector HNSW index, worktree file loader (`files.content=NULL`), commit-scoped cache + invalidation |
 | **P1 (Done)** | **3. API Governance** | Auth/chat/index rate limits, concurrent index cap, usage logs and token budgets, `/api/v1` |
 | **P1 (Done)** | **4. Real-Time UX** | Index progress SSE, streamed agent status and answer tokens |
-| **P2** | **5. Worker Scale** | Worker heartbeats / ARQ or Celery, OpenRouter retry backoff, repo size limits |
+| **P2 (Done)** | **5. Worker Scale** | Job heartbeats, shared `repodata` volume, parallel parse, LLM retry, size caps |
 | **P2** | **6. Infra & Observability** | Nginx frontend container, multi-worker Uvicorn, OpenTelemetry/Prometheus, Postgres+Redis in CI |
 | **P3** | **7. Cleanup & Docs** | Remove deprecated `worker/` & `parsers/` stubs, sync `README.md` and architecture handbook |

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
+from concurrent.futures import ProcessPoolExecutor
 
 from sqlalchemy.orm import Session
 
@@ -41,6 +43,13 @@ from app.services.rag_service import chunk_repository, embed_chunks
 from app.services.usage_service import assert_token_budget, reset_usage_user, set_usage_user
 
 logger = logging.getLogger(__name__)
+
+
+def parse_worker_count() -> int:
+    settings = get_settings()
+    if settings.parse_workers and settings.parse_workers > 0:
+        return settings.parse_workers
+    return min(4, os.cpu_count() or 1)
 
 
 def index_progress_channel(repository_id: uuid.UUID | str) -> str:
@@ -236,6 +245,35 @@ def run_indexing_job(
             db.flush()
             discovered = discover_files(dest)
 
+        settings = get_settings()
+        if len(discovered) > settings.max_index_files:
+            raise RuntimeError(
+                f"Repository has {len(discovered)} indexable files; limit is {settings.max_index_files}"
+            )
+
+        to_parse = [item for item in discovered if item["language"] != "markdown"]
+        parsed_by_path: dict[str, object] = {}
+        if to_parse:
+            workers = parse_worker_count()
+            if workers <= 1:
+                for item in to_parse:
+                    parsed_by_path[item["path"]] = parse_file_content(
+                        item["language"], item["path"], item["content"]
+                    )
+            else:
+                with ProcessPoolExecutor(max_workers=workers) as pool:
+                    futures = [
+                        (
+                            item["path"],
+                            pool.submit(
+                                parse_file_content, item["language"], item["path"], item["content"]
+                            ),
+                        )
+                        for item in to_parse
+                    ]
+                    for path, future in futures:
+                        parsed_by_path[path] = future.result()
+
         for item in discovered:
             existing = (
                 db.query(FileRecord)
@@ -261,8 +299,9 @@ def run_indexing_job(
                 db.flush()
             content_by_file_id[file_rec.id] = item["content"]
             if item["language"] != "markdown":
-                parsed_result = parse_file_content(item["language"], item["path"], item["content"])
-                persist_parse_results(db, repo.id, file_rec, parsed_result)
+                parsed_result = parsed_by_path.get(item["path"])
+                if parsed_result is not None:
+                    persist_parse_results(db, repo.id, file_rec, parsed_result)
             affected_file_ids.append(file_rec.id)
         db.commit()
         timings["parse_ms"] = round((time.perf_counter() - parse_start) * 1000, 1)

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     encryption_key: str = ""
     environment: str = "development"
     index_max_attempts: int = 3
+    index_heartbeat_ttl_seconds: int = 30
+    max_repo_size_kb: int = 512_000
+    max_index_files: int = 8000
+    parse_workers: int = 0
 
 
 def validate_runtime_security(settings: Settings) -> None:
