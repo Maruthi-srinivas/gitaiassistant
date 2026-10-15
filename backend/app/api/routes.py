@@ -4,7 +4,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -57,6 +57,7 @@ from app.services.git_history_service import (
 from app.services.graph_service import get_graph
 from app.services.knowledge_service import get_knowledge_tree
 from app.services.repository_service import (
+    assert_index_capacity,
     check_rate_limit,
     create_repository,
     enqueue_index,
@@ -64,18 +65,22 @@ from app.services.repository_service import (
     latest_job,
     list_repositories,
 )
+from app.services.usage_service import assert_token_budget, reset_usage_user, set_usage_user
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api/v1")
 
 
-@router.get("/health")
-def health():
-    return {"status": "ok"}
+def _client_ip(request: Request) -> str:
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
 
 
 @router.post("/auth/register", response_model=TokenResponse, status_code=201)
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
+def register(body: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    settings = get_settings()
+    check_rate_limit(f"auth:{_client_ip(request)}", settings.auth_rate_limit_per_minute)
     email = body.email.strip().lower()
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
@@ -93,7 +98,9 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/auth/login", response_model=TokenResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+def login(body: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    settings = get_settings()
+    check_rate_limit(f"auth:{_client_ip(request)}", settings.auth_rate_limit_per_minute)
     email = body.email.strip().lower()
     user = db.query(User).filter(User.email == email).first()
     if not user or not verify_password(body.password, user.password_hash):
@@ -162,6 +169,7 @@ def index_repo(
     settings = get_settings()
     check_rate_limit(f"index:{user.id}", settings.index_rate_limit_per_minute)
     get_repository(db, repo_id, user_id=user.id)
+    assert_index_capacity(db, user.id)
     incremental = body.incremental if body else False
     branch = body.branch if body else None
     job = enqueue_index(db, repo_id, incremental=incremental, branch=branch)
@@ -392,6 +400,7 @@ def chat_repo(
     settings = get_settings()
     check_rate_limit(f"chat:{user.id}", settings.chat_rate_limit_per_minute)
     repo = get_repository(db, repo_id, user_id=user.id)
+    assert_token_budget(db, user)
     cache_key = chat_cache_key(str(repo_id), body.message, repo.commit_hash)
 
     if body.conversation_id is None:
@@ -399,9 +408,13 @@ def chat_repo(
         if cached:
             return ChatResponse(**cached)
 
-    conversation, answer, sources = agent_chat(
-        db, repo_id, body.message, conversation_id=body.conversation_id, user_id=user.id
-    )
+    usage_ctx = set_usage_user(user.id)
+    try:
+        conversation, answer, sources = agent_chat(
+            db, repo_id, body.message, conversation_id=body.conversation_id, user_id=user.id
+        )
+    finally:
+        reset_usage_user(usage_ctx)
     response = ChatResponse(
         conversation_id=conversation.id,
         answer=answer,

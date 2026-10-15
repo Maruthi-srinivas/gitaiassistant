@@ -146,42 +146,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   register: (email: string, password: string) =>
-    request<{ access_token: string }>("/api/auth/register", {
+    request<{ access_token: string }>("/api/v1/auth/register", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
   login: (email: string, password: string) =>
-    request<{ access_token: string }>("/api/auth/login", {
+    request<{ access_token: string }>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
   logout: () =>
-    request<{ status: string }>("/api/auth/logout", {
+    request<{ status: string }>("/api/v1/auth/logout", {
       method: "POST",
     }),
-  me: () => request<User>("/api/auth/me"),
+  me: () => request<User>("/api/v1/auth/me"),
   updateMe: (github_token: string) =>
-    request<User>("/api/auth/me", {
+    request<User>("/api/v1/auth/me", {
       method: "PATCH",
       body: JSON.stringify({ github_token }),
     }),
   createRepo: (url: string) =>
-    request<Repo>("/api/repositories", { method: "POST", body: JSON.stringify({ url }) }),
-  listRepos: () => request<Repo[]>("/api/repositories"),
+    request<Repo>("/api/v1/repositories", { method: "POST", body: JSON.stringify({ url }) }),
+  listRepos: () => request<Repo[]>("/api/v1/repositories"),
   indexRepo: (id: string, incremental = false, branch?: string) =>
-    request<{ job_id: string; status: string }>(`/api/repositories/${id}/index`, {
+    request<{ job_id: string; status: string }>(`/api/v1/repositories/${id}/index`, {
       method: "POST",
       body: JSON.stringify({ incremental, branch: branch || undefined }),
     }),
-  indexStatus: (id: string) => request<IndexStatus>(`/api/repositories/${id}/index-status`),
-  branches: (id: string) => request<Branch[]>(`/api/repositories/${id}/branches`),
-  tree: (id: string) => request<KnowledgeNode[]>(`/api/repositories/${id}/tree`),
-  graph: (id: string) => request<GraphData>(`/api/repositories/${id}/graph`),
-  files: (id: string) => request<FileRow[]>(`/api/repositories/${id}/files`),
+  indexStatus: (id: string) => request<IndexStatus>(`/api/v1/repositories/${id}/index-status`),
+  branches: (id: string) => request<Branch[]>(`/api/v1/repositories/${id}/branches`),
+  tree: (id: string) => request<KnowledgeNode[]>(`/api/v1/repositories/${id}/tree`),
+  graph: (id: string) => request<GraphData>(`/api/v1/repositories/${id}/graph`),
+  files: (id: string) => request<FileRow[]>(`/api/v1/repositories/${id}/files`),
   file: (repoId: string, fileId: string) =>
-    request<FileDetail>(`/api/repositories/${repoId}/files/${fileId}`),
+    request<FileDetail>(`/api/v1/repositories/${repoId}/files/${fileId}`),
   chat: (id: string, message: string, conversation_id?: string) =>
-    request<ChatResponse>(`/api/repositories/${id}/chat`, {
+    request<ChatResponse>(`/api/v1/repositories/${id}/chat`, {
       method: "POST",
       body: JSON.stringify({ message, conversation_id }),
     }),

@@ -17,8 +17,14 @@ class Settings(BaseSettings):
     index_queue_key: str = "index_jobs"
     cors_origins: str = "http://localhost:3000"
     embedding_dimensions: int = 1536
-    chat_rate_limit_per_minute: int = 30
+    auth_rate_limit_per_minute: int = 10
+    chat_rate_limit_per_minute: int = 20
     index_rate_limit_per_minute: int = 10
+    max_active_index_jobs_per_user: int = 2
+    free_daily_token_budget: int = 100_000
+    free_monthly_token_budget: int = 2_000_000
+    pro_daily_token_budget: int = 1_000_000
+    pro_monthly_token_budget: int = 20_000_000
     git_clone_depth: int = 200
     git_history_max_commits: int = 200
     # RAG retrieval: heuristic (default) or llm for optional cross-chunk scoring

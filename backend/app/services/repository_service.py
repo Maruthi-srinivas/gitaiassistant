@@ -114,3 +114,22 @@ def check_rate_limit(key: str, limit: int, window_seconds: int = 60) -> None:
         r.expire(bucket, window_seconds)
     if count > limit:
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+
+def assert_index_capacity(db: Session, user_id: uuid.UUID) -> None:
+    settings = get_settings()
+    cap = max(1, int(settings.max_active_index_jobs_per_user))
+    active = (
+        db.query(IndexingJob)
+        .join(Repository, Repository.id == IndexingJob.repository_id)
+        .filter(
+            Repository.owner_user_id == user_id,
+            IndexingJob.status.notin_([JobStatus.COMPLETED, JobStatus.FAILED]),
+        )
+        .count()
+    )
+    if active >= cap:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many active indexing jobs (limit {cap})",
+        )

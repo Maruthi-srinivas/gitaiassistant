@@ -51,26 +51,18 @@ Before tracking pending work, the following capabilities are **already implement
 
 ---
 
-## Stage 3: API Governance, Rate Limiting & Cost Controls (P1 — Abuse Prevention)
+## Stage 3: API Governance, Rate Limiting & Cost Controls (P1 — Completed)
 
-### 3.1 API Rate Limiting & Concurrency Quotas
-- **Current state:** No rate limiting exists on `/api/auth/*`, `/api/repositories/{id}/index`, or `/api/repositories/{id}/chat`.
-- **Pending work:**
-  - Add Redis-backed rate limiting (e.g., `slowapi` or custom token-bucket middleware):
-    - Auth endpoints: e.g., 10 req/min per IP.
-    - Chat endpoint: e.g., 20 req/min per user.
-    - Indexing jobs: max 2 concurrent active jobs per user.
+### 3.1 API Rate Limiting & Concurrency Quotas (Completed)
+- **Implemented:** Redis fixed-window limits in `check_rate_limit`: auth endpoints are capped at 10 requests/minute per client IP, chat at 20/minute per user, and index enqueue at 10/minute per user.
+- **Implemented:** `assert_index_capacity()` rejects new index jobs with HTTP 429 when a user already has `MAX_ACTIVE_INDEX_JOBS_PER_USER` (default 2) jobs that are not `COMPLETED` or `FAILED`.
 
-### 3.2 LLM Token Accounting & Per-User Quotas
-- **Current state:** Every chat turn and knowledge-tree enrichment calls OpenRouter (`LLM_API_KEY`) without tracking token consumption or cost per user.
-- **Pending work:**
-  - Record `prompt_tokens`, `completion_tokens`, and model name from OpenRouter responses into a `usage_logs` table.
-  - Enforce daily/monthly token budgets per user tier.
+### 3.2 LLM Token Accounting & Per-User Quotas (Completed)
+- **Implemented:** `users.plan` (`free` or `pro`) and `usage_logs` (`prompt_tokens`, `completion_tokens`, model, kind) via Alembic revision `0002_usage_logs`.
+- **Implemented:** `chat_completion` and `embed_texts` record usage for the user set by `set_usage_user` (chat requests and indexing jobs). `assert_token_budget()` enforces daily and monthly caps before chat and before an index job starts.
 
-### 3.3 API Versioning (`/api/v1`)
-- **Current state:** Routes are mounted under unversioned `/api/...` (`backend/app/api/routes.py`).
-- **Pending work:**
-  - Mount versioned routers under `/api/v1/...` while keeping `/api/health` for load balancer probes.
+### 3.3 API Versioning (`/api/v1`) (Completed)
+- **Implemented:** Application routes are mounted at `/api/v1`. `GET /api/health` stays on the app for load-balancer probes. The frontend calls `/api/v1/...`.
 
 ---
 
@@ -155,7 +147,7 @@ Before tracking pending work, the following capabilities are **already implement
 | :--- | :--- | :--- |
 | **P0 (Done)** | **1. Security & Auth** | Encrypted `github_token` at rest, JWT `jti` Redis revocation, transient Git HTTP auth headers & log redaction |
 | **P0 (Done)** | **2. Database & Storage** | Alembic migrations, pgvector HNSW index, worktree file loader (`files.content=NULL`), commit-scoped cache + invalidation |
-| **P1** | **3. API Governance** | Redis rate limiting, per-user LLM token budgets, `/api/v1` prefix |
+| **P1 (Done)** | **3. API Governance** | Auth/chat/index rate limits, concurrent index cap, usage logs and token budgets, `/api/v1` |
 | **P1** | **4. Real-Time UX** | SSE for indexing progress, token-by-token streaming for LangGraph chat |
 | **P2** | **5. Worker Scale** | Worker heartbeats / ARQ or Celery, OpenRouter retry backoff, repo size limits |
 | **P2** | **6. Infra & Observability** | Nginx frontend container, multi-worker Uvicorn, OpenTelemetry/Prometheus, Postgres+Redis in CI |

@@ -36,6 +36,7 @@ from app.services.graph_service import rebuild_graph
 from app.services.knowledge_service import enrich_knowledge_descriptions, rebuild_knowledge_tree
 from app.services.parser_service import parse_file_content, persist_parse_results
 from app.services.rag_service import chunk_repository, embed_chunks
+from app.services.usage_service import assert_token_budget, reset_usage_user, set_usage_user
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +85,15 @@ def run_indexing_job(
     timings: dict[str, float] = {}
     metrics: dict = {}
     t0 = time.perf_counter()
+    usage_ctx = set_usage_user(repo.owner_user_id)
 
     try:
         parsed = parse_github_url(repo.github_url)
         dest = repo_local_path(str(repo.id))
         owner = db.get(User, repo.owner_user_id) if repo.owner_user_id else None
         clone_token = decrypt_secret(owner.github_token) if owner and owner.github_token else None
+        if owner:
+            assert_token_budget(db, owner)
         old_commit = repo.commit_hash
         target_branch = branch or job.branch or repo.default_branch
         if branch:
@@ -310,4 +314,6 @@ def run_indexing_job(
             job.metrics = metrics or {}
             _set_status(db, repo, job, JobStatus.FAILED, job.progress or 0.0, error=msg[:2000])
         return False
+    finally:
+        reset_usage_user(usage_ctx)
     return True

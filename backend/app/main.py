@@ -23,6 +23,11 @@ app.add_middleware(
 app.include_router(router)
 
 
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     validate_runtime_security(get_settings())
