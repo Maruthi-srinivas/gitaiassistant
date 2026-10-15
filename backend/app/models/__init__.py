@@ -10,6 +10,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -196,6 +197,7 @@ class FileRecord(Base):
 
 class Symbol(Base):
     __tablename__ = "symbols"
+    __table_args__ = (Index("ix_symbols_file_name", "file_id", "name"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     file_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("files.id", ondelete="CASCADE"))
@@ -259,6 +261,7 @@ class KnowledgeNode(Base):
 
 class CodeChunk(Base):
     __tablename__ = "code_chunks"
+    __table_args__ = (Index("ix_code_chunks_repo_file", "repository_id", "file_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     file_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("files.id", ondelete="CASCADE"))

@@ -22,6 +22,7 @@ from app.models import (
     Symbol,
     User,
 )
+from app.services.cache import invalidate_repo_chat_cache
 from app.services.file_discovery import (
     changed_files,
     clone_repository,
@@ -166,6 +167,7 @@ def run_indexing_job(
         _set_status(db, repo, job, JobStatus.PARSING, 0.4)
         parse_start = time.perf_counter()
         affected_file_ids: list[uuid.UUID] = []
+        content_by_file_id: dict[uuid.UUID, str] = {}
 
         if incremental and changed is not None:
             existing = (
@@ -210,7 +212,7 @@ def run_indexing_job(
                 existing.language = item["language"]
                 existing.size = item["size"]
                 existing.hash = item["hash"]
-                existing.content = item["content"]
+                existing.content = None
                 file_rec = existing
             else:
                 file_rec = FileRecord(
@@ -219,10 +221,11 @@ def run_indexing_job(
                     language=item["language"],
                     size=item["size"],
                     hash=item["hash"],
-                    content=item["content"],
+                    content=None,
                 )
                 db.add(file_rec)
                 db.flush()
+            content_by_file_id[file_rec.id] = item["content"]
             if item["language"] != "markdown":
                 parsed_result = parse_file_content(item["language"], item["path"], item["content"])
                 persist_parse_results(db, repo.id, file_rec, parsed_result)
@@ -260,6 +263,7 @@ def run_indexing_job(
             repo.id,
             commit_hash,
             file_ids=affected_file_ids if incremental else None,
+            content_by_file_id=content_by_file_id,
         )
         db.commit()
         timings["chunk_ms"] = round((time.perf_counter() - chunk_start) * 1000, 1)
@@ -278,6 +282,7 @@ def run_indexing_job(
         db.commit()
 
         _set_status(db, repo, job, JobStatus.COMPLETED, 1.0)
+        invalidate_repo_chat_cache(str(repo.id))
         logger.info(
             "Indexing completed for repo %s job %s timings=%s metrics=%s",
             repo.id,

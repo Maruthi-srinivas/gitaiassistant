@@ -12,6 +12,7 @@ from app.models import CodeChunk, FileRecord, Symbol
 from app.rag.embeddings import embed_texts
 from app.rag.fusion import reciprocal_rank_fusion
 from app.rag.reranker import rerank
+from app.services.file_discovery import load_file_content
 from app.services.graph_service import expand_graph_neighbors
 
 logger = logging.getLogger(__name__)
@@ -158,7 +159,7 @@ def symbol_search(db: Session, repository_id: uuid.UUID, query: str, limit: int 
         if chunk:
             results.append(_chunk_to_dict(chunk, file_rec.path, score=1.2))
             continue
-        lines = (file_rec.content or "").splitlines()
+        lines = load_file_content(file_rec).splitlines()
         snippet = "\n".join(lines[max(0, sym.start_line - 1) : sym.end_line])
         results.append(
             {
@@ -292,7 +293,7 @@ def hybrid_retrieve(db: Session, repository_id: uuid.UUID, query: str, limit: in
             .all()
         )
         for sym, file_rec in related:
-            lines = (file_rec.content or "").splitlines()
+            lines = load_file_content(file_rec).splitlines()
             snippet = "\n".join(lines[max(0, sym.start_line - 1) : min(len(lines), sym.end_line)])
             graph_hits.append(
                 {

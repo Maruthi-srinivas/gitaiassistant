@@ -47,7 +47,7 @@ from app.schemas import (
 )
 from app.agents.workflow import chat as agent_chat
 from app.services.cache import cache_get, cache_set, chat_cache_key
-from app.services.file_discovery import repo_local_path
+from app.services.file_discovery import load_file_content, repo_local_path
 from app.services.git_history_service import (
     commits_for_path,
     compare_commits,
@@ -315,11 +315,17 @@ def list_files(
 def get_file(
     repo_id: uuid.UUID, file_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    get_repository(db, repo_id, user_id=user.id)
+    repo = get_repository(db, repo_id, user_id=user.id)
     f = db.get(FileRecord, file_id)
     if not f or f.repository_id != repo_id:
         raise HTTPException(status_code=404, detail="File not found")
-    return f
+    return FileDetailOut(
+        id=f.id,
+        path=f.path,
+        language=f.language,
+        size=f.size,
+        content=load_file_content(f, repo.local_path),
+    )
 
 
 @router.get("/repositories/{repo_id}/symbols/{symbol}", response_model=list[SymbolOut])
@@ -385,10 +391,11 @@ def chat_repo(
 ):
     settings = get_settings()
     check_rate_limit(f"chat:{user.id}", settings.chat_rate_limit_per_minute)
-    get_repository(db, repo_id, user_id=user.id)
+    repo = get_repository(db, repo_id, user_id=user.id)
+    cache_key = chat_cache_key(str(repo_id), body.message, repo.commit_hash)
 
     if body.conversation_id is None:
-        cached = cache_get(chat_cache_key(str(repo_id), body.message))
+        cached = cache_get(cache_key)
         if cached:
             return ChatResponse(**cached)
 
@@ -401,5 +408,5 @@ def chat_repo(
         sources=[SourceRef(**s) for s in sources],
     )
     if body.conversation_id is None:
-        cache_set(chat_cache_key(str(repo_id), body.message), response.model_dump(mode="json"))
+        cache_set(cache_key, response.model_dump(mode="json"))
     return response

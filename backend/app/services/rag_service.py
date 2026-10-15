@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import CodeChunk, FileRecord, Symbol
 from app.rag.chunk_text import build_chunk_tsv, build_embed_text
 from app.rag.embeddings import embed_texts
+from app.services.file_discovery import load_file_content
 from app.services.markdown_chunking import chunk_markdown
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ def chunk_repository(
     repository_id: uuid.UUID,
     commit_hash: str | None,
     file_ids: list[uuid.UUID] | None = None,
+    content_by_file_id: dict[uuid.UUID, str] | None = None,
 ) -> int:
     clear_chunks(db, repository_id, file_ids=file_ids)
     q = db.query(FileRecord).filter(FileRecord.repository_id == repository_id)
@@ -57,9 +59,14 @@ def chunk_repository(
     files = q.all()
     created = 0
     for f in files:
-        lines = (f.content or "").splitlines()
+        raw_content = (
+            content_by_file_id[f.id]
+            if content_by_file_id and f.id in content_by_file_id
+            else load_file_content(f)
+        )
+        lines = (raw_content or "").splitlines()
         if f.language == "markdown":
-            for start, end, body in chunk_markdown(f.content or ""):
+            for start, end, body in chunk_markdown(raw_content or ""):
                 tsv = build_chunk_tsv(f.path, body, language="markdown")
                 chunk = CodeChunk(
                     file_id=f.id,

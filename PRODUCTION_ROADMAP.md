@@ -33,36 +33,21 @@ Before tracking pending work, the following capabilities are **already implement
 
 ---
 
-## Stage 2: Database Migrations, Vector Indexing & Storage (P0 — Data Layer)
+## Stage 2: Database Migrations, Vector Indexing & Storage (P0 — Completed)
 
-### 2.1 Replace Runtime `_ensure_columns()` with Alembic Migrations
-- **Current state:** Schema changes are applied via `Base.metadata.create_all()` and raw `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements inside `backend/app/database.py` (`_ensure_columns()`).
-- **Pending work:**
-  - Initialize **Alembic** in `backend/alembic/`.
-  - Generate an initial baseline migration representing the V5 schema.
-  - Run `alembic upgrade head` in an init container or release step instead of mutating schema on every FastAPI worker startup.
+### 2.1 Replace Runtime `_ensure_columns()` with Alembic Migrations (Completed)
+- **Implemented:** Configured Alembic in `backend/alembic.ini` and `backend/alembic/env.py` with baseline revision `backend/alembic/versions/0001_v5_baseline_and_indexes.py`.
+- **Implemented:** Replaced `_ensure_columns()` in `backend/app/database.py` with `run_migrations()` (`alembic upgrade head`).
 
-### 2.2 Add pgvector HNSW Index on `code_chunks.embedding`
-- **Current state:** `code_chunks` has a GIN index on `search_tsv`, but vector similarity queries perform sequential scans over `code_chunks.embedding`.
-- **Pending work:**
-  - Create an HNSW index for fast approximate nearest neighbor search:
-    ```sql
-    CREATE INDEX CONCURRENTLY ix_code_chunks_embedding_hnsw
-    ON code_chunks USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
-    ```
-  - Add composite B-tree indexes on `code_chunks(repository_id, file_id)` and `symbols(file_id, name)`.
+### 2.2 Add pgvector HNSW Index on `code_chunks.embedding` (Completed)
+- **Implemented:** Added `ix_code_chunks_embedding_hnsw` (`USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)`), `ix_code_chunks_search_tsv` (GIN), and composite B-tree indexes `ix_code_chunks_repo_file` and `ix_symbols_file_name`.
 
-### 2.3 Offload Raw File Contents from PostgreSQL
-- **Current state:** `FileRecord.content` stores the entire source text of every indexed file in PostgreSQL (`files.content`), bloating database memory and backups.
-- **Pending work:**
-  - Store source blobs in object storage (S3 / MinIO / GCS) keyed by `(repository_id, commit_hash, content_sha256)` or read directly from the cloned git worktree.
-  - Keep only metadata (`path`, `language`, `size`, `hash`) in the `files` table.
+### 2.3 Offload Raw File Contents from PostgreSQL (Completed)
+- **Implemented:** `indexing_pipeline.py` now persists `FileRecord.content = None` in PostgreSQL (storing only file metadata) and passes discovered source text in memory to `chunk_repository()`.
+- **Implemented:** Added `load_file_content()` in `backend/app/services/file_discovery.py` to read files directly from the cloned git worktree (`/data/{repo_id}`) with path-traversal protection and DB fallback for legacy rows, wired across `routes.py`, `agents/tools.py`, `rag_service.py`, and `rag/retriever.py`.
 
-### 2.4 Cache Invalidation on Re-Index
-- **Current state:** `backend/app/services/cache.py` caches chat responses (`cache:chat:{repo_id}:{hash}`) for 300s, and does not invalidate when a repository is re-indexed or switches branches.
-- **Pending work:**
-  - Include `commit_hash` in the cache key (`cache:chat:{repo_id}:{commit_hash}:{hash}`) or purge `cache:chat:{repo_id}:*` on indexing job completion.
+### 2.4 Cache Invalidation on Re-Index (Completed)
+- **Implemented:** `chat_cache_key()` in `backend/app/services/cache.py` now scopes keys by `commit_hash` (`chat:{repo_id}:{commit_hash}:{digest}`), and `invalidate_repo_chat_cache()` purges `cache:chat:{repo_id}:*` keys in Redis whenever an indexing job completes.
 
 ---
 
@@ -169,7 +154,7 @@ Before tracking pending work, the following capabilities are **already implement
 | Priority | Stage | Key Deliverables |
 | :--- | :--- | :--- |
 | **P0 (Done)** | **1. Security & Auth** | Encrypted `github_token` at rest, JWT `jti` Redis revocation, transient Git HTTP auth headers & log redaction |
-| **P0** | **2. Database & Storage** | Alembic migrations, pgvector HNSW index, offload `files.content` from Postgres, commit-scoped cache |
+| **P0 (Done)** | **2. Database & Storage** | Alembic migrations, pgvector HNSW index, worktree file loader (`files.content=NULL`), commit-scoped cache + invalidation |
 | **P1** | **3. API Governance** | Redis rate limiting, per-user LLM token budgets, `/api/v1` prefix |
 | **P1** | **4. Real-Time UX** | SSE for indexing progress, token-by-token streaming for LangGraph chat |
 | **P2** | **5. Worker Scale** | Worker heartbeats / ARQ or Celery, OpenRouter retry backoff, repo size limits |

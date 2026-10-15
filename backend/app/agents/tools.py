@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Dependency, FileRecord
 from app.rag.retriever import hybrid_retrieve, search_documentation, symbol_search
-from app.services.file_discovery import repo_local_path
+from app.services.file_discovery import load_file_content, repo_local_path
 from app.services.git_history_service import get_git_history_context
 from app.services.graph_service import expand_graph_neighbors, get_graph
 from app.services.knowledge_service import get_knowledge_tree
@@ -32,11 +32,12 @@ def read_file(db: Session, repository_id: uuid.UUID, path: str) -> dict | None:
         )
     if not row:
         return None
+    text_content = load_file_content(row)
     return {
         "file": row.path,
         "start_line": 1,
-        "end_line": max(1, len((row.content or "").splitlines())),
-        "content": (row.content or "")[:8000],
+        "end_line": max(1, len(text_content.splitlines())),
+        "content": text_content[:8000],
         "language": row.language,
         "score": 1.0,
     }

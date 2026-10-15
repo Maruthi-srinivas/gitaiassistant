@@ -298,3 +298,22 @@ def discover_files(root: Path) -> list[dict]:
                 }
             )
     return results
+
+
+def load_file_content(file_rec, local_path: str | Path | None = None) -> str:
+    """Read file content from the cloned git worktree, falling back to DB content if unavailable."""
+    if file_rec is None:
+        return ""
+    rel_path = getattr(file_rec, "path", None)
+    repo_id = getattr(file_rec, "repository_id", None)
+    if rel_path and (local_path or repo_id):
+        try:
+            root = Path(local_path) if local_path else repo_local_path(str(repo_id))
+            root_resolved = root.resolve()
+            candidate = (root_resolved / rel_path).resolve()
+            if candidate.is_relative_to(root_resolved) and candidate.is_file():
+                return candidate.read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+    return getattr(file_rec, "content", None) or ""
+

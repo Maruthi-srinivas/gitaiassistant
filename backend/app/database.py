@@ -1,10 +1,17 @@
-from collections.abc import Generator
+from __future__ import annotations
 
-from sqlalchemy import create_engine, text
+import logging
+from collections.abc import Generator
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 engine = create_engine(settings.database_url, pool_pre_ping=True)
@@ -23,32 +30,25 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def _ensure_columns() -> None:
-    """Add columns introduced in V2+ to existing volumes (create_all does not alter)."""
-    alters = [
-        "ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS branch VARCHAR(255)",
-        "ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS timings JSONB",
-        "ALTER TABLE indexing_jobs ADD COLUMN IF NOT EXISTS metrics JSONB",
-        "ALTER TABLE code_chunks ADD COLUMN IF NOT EXISTS search_tsv tsvector",
-        (
-            "CREATE INDEX IF NOT EXISTS ix_code_chunks_search_tsv "
-            "ON code_chunks USING GIN (search_tsv)"
-        ),
-        "ALTER TABLE repositories ADD COLUMN IF NOT EXISTS owner_user_id UUID",
-        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id UUID",
-    ]
+def get_alembic_config() -> Config:
+    backend_dir = Path(__file__).resolve().parent.parent
+    ini_path = backend_dir / "alembic.ini"
+    cfg = Config(str(ini_path) if ini_path.exists() else None)
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", get_settings().database_url)
+    cfg.attributes["skip_logging_config"] = True
+    return cfg
+
+
+def run_migrations() -> None:
+    """Run Alembic migrations up to head."""
+    from app import models  # noqa: F401
+
+    cfg = get_alembic_config()
     with engine.begin() as conn:
-        for stmt in alters:
-            try:
-                conn.execute(text(stmt))
-            except Exception:
-                pass
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "head")
 
 
 def init_db() -> None:
-    from app import models  # noqa: F401
-
-    with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    Base.metadata.create_all(bind=engine)
-    _ensure_columns()
+    run_migrations()
